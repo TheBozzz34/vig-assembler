@@ -1,0 +1,65 @@
+# Fill data[0..9] with i*i, then sum the array.
+#
+# Both loops address the data segment with `store_at` and `load_at`, so neither
+# knows which slot it touches until run time. Plain `load`/`store` cannot express
+# this, because their address is baked into the instruction.
+#
+# data[100] = cursor
+# data[101] = running total
+
+start:
+    push 0
+    store 100
+
+fill_loop:
+    # value = cursor * cursor
+    load 100
+    dup
+    mul
+
+    # address = cursor, then data[cursor] = value
+    load 100
+    store_at
+
+    # cursor += 1, leaving a copy to test
+    load 100
+    push 1
+    add
+    dup
+    store 100
+
+    # continue while cursor != 10
+    push 10
+    ne
+    jmp_not_zero fill_loop
+
+sum_setup:
+    push 0
+    store 101
+    push 0
+    store 100
+
+sum_loop:
+    # total += data[cursor]
+    load 101
+    load 100
+    load_at
+    add
+    store 101
+
+    # cursor += 1, leaving a copy to test
+    load 100
+    push 1
+    add
+    dup
+    store 100
+
+    push 10
+    ne
+    jmp_not_zero sum_loop
+
+    # 0+1+4+9+16+25+36+49+64+81 = 285
+    load 101
+    print
+    pop
+    halt

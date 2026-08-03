@@ -33,10 +33,33 @@ labels used by jumps and calls resolve to absolute byte addresses.
 | 21 | `store address` | unsigned `u32` | `value →` | Pop a value into the data segment. |
 | 22 | `call target` | unsigned `u32` | — | Save the next instruction address and jump to `target`. |
 | 23 | `ret` | — | — | Return to the address saved by `call`. |
+| 24 | `foreign_call name` | unsigned `u8` import index | `arg1 ... argN → result` | Call an `extern` declaration. |
+| 25 | `print_string` | — | `address → address` | Print the NUL-terminated string at a VIG bytecode address. |
+| 26 | `load_at` | — | `address → data[address]` | Push a value from the data segment, using an address taken from the stack. |
+| 27 | `store_at` | — | `value address →` | Pop a value into the data segment, using an address taken from the stack. |
 
-| 24 | `foreign_call name` | unsigned `u8` import index | `arg1 ... argN -> result` | Call an `extern` declaration. |
+## Indirect data access
 
-| 25 | `print_string` | â€” | `address â†’ address` | Print the NUL-terminated string at a VIG bytecode address. |
+`load` and `store` encode their address in the instruction, so it is fixed at
+assembly time. `load_at` and `store_at` take the address from the stack instead,
+which is what makes arrays and computed offsets possible: the address can be the
+result of any calculation.
+
+For `store_at` the address is on top, above the value, so a write reads as "push
+what to store, push where to store it":
+
+```asm
+push 7      # value
+push 2      # address
+store_at    # data[2] = 7
+
+push 2
+load_at     # → 7
+```
+
+Both instructions fault with `SegmentFault` on a negative address or one at or
+beyond the end of the data segment. `examples\array_sum.vigas` fills and then
+sums a ten-element array with computed addresses.
 
 ## Strings
 
@@ -93,7 +116,8 @@ structs, floating point, output buffers, or 64-bit return values.
 ## Limits and errors
 
 - The data segment contains 256 signed 32-bit slots, so valid data addresses
-  are `0` through `255`.
+  are `0` through `255`. This applies to `load_at` and `store_at` too, which
+  additionally reject negative addresses rather than wrapping them.
 - The data stack has 256 slots. `call` and `ret` use a separate 128-entry call
   stack.
 - A jump or call target must point inside the loaded program.

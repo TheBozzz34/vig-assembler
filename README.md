@@ -57,3 +57,15 @@ loop:
 `push` accepts a signed 32-bit decimal/base-prefixed value or a label address.
 `load` and `store` take unsigned 32-bit data addresses. `jmp`, `jmp_zero`,
 `jmp_not_zero`, and `call` accept either a label or an explicit byte address.
+
+`load_at` and `store_at` take no operand and read the data address from the stack
+instead, which is how arrays and computed offsets are written. See
+[OPCODES.md](OPCODES.md#indirect-data-access) and `examples\array_sum.vigas`,
+which fills and sums a ten-element array:
+
+```powershell
+zig build run -- examples\array_sum.vigas -o array_sum.vig
+..\vig\zig-out\bin\vig.exe array_sum.vig
+```
+
+It prints `285`.

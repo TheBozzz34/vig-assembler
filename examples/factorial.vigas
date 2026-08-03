@@ -1,0 +1,43 @@
+# data[0] = n (argument/current value)
+
+start:
+    push 12          # 15! overflows a 32-bit integer
+    store 0
+
+    call fact
+
+    print
+    pop
+    halt
+
+
+# fact()
+#
+# Uses data[0] as the current n.
+# Returns the factorial on the stack.
+#
+fact:
+    load 0
+    push 1
+    lte
+    jmp_not_zero fact_base
+
+    # save n
+    load 0
+
+    # n = n - 1
+    dup
+    push 1
+    sub
+    store 0
+
+    # recursive call
+    call fact
+
+    # multiply by saved n
+    mul
+    ret
+
+fact_base:
+    push 1
+    ret

@@ -248,6 +248,7 @@ fn instructionFor(operation: []const u8) !Instruction {
         .{ "store", 21, .u32_address }, .{ "call", 22, .target }, .{ "ret", 23, .none },
         .{ "foreign_call", 24, .foreign_import },
         .{ "print_string", 25, .none },
+        .{ "load_at", 26, .none }, .{ "store_at", 27, .none },
     };
 
     inline for (definitions) |definition| {
@@ -293,11 +294,13 @@ test "assembles a foreign-import container and call" {
         \\foreign_call GetCurrentProcessId
         \\halt
     ;
+    // A string-literal concatenation is already a pointer to an array, so it is
+    // passed without a second `&`.
     const expected = "VIGF" ++ [_]u8{ 1, 1, 12, 19, 0 } ++
         "kernel32.dllGetCurrentProcessId" ++ [_]u8{ 24, 0, 0 };
     const output = try assemble(std.testing.allocator, source);
     defer std.testing.allocator.free(output);
-    try std.testing.expectEqualSlices(u8, &expected, output);
+    try std.testing.expectEqualSlices(u8, expected, output);
 }
 
 test "push accepts signed literals and label addresses" {
@@ -331,6 +334,28 @@ test "assembles print_string" {
         1, 7, 0, 0, 0,
         25, 0,
         'o', 'k', 0,
+    };
+    const output = try assemble(std.testing.allocator, source);
+    defer std.testing.allocator.free(output);
+    try std.testing.expectEqualSlices(u8, &expected, output);
+}
+
+test "assembles indirect data access" {
+    const source =
+        \\  push 7
+        \\  push 2
+        \\  store_at
+        \\  push 2
+        \\  load_at
+        \\  halt
+    ;
+    const expected = [_]u8{
+        1, 7, 0, 0, 0,
+        1, 2, 0, 0, 0,
+        27,
+        1, 2, 0, 0, 0,
+        26,
+        0,
     };
     const output = try assemble(std.testing.allocator, source);
     defer std.testing.allocator.free(output);
