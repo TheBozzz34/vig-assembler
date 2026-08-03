@@ -1,0 +1,13 @@
+# Stores 40 in data slot zero, calls a routine, and prints 42.
+start:
+  push 40
+  store 0
+  call increment
+  print
+  halt
+
+increment:
+  load 0
+  push 2
+  add
+  ret

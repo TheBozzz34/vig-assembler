@@ -1,0 +1,12 @@
+.{
+    .name = .vig_assembler,
+    .version = "0.1.0",
+    .fingerprint = 0x6ad18b352a1d56a3,
+    .minimum_zig_version = "0.17.0-dev.1543+6db520a4c",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
