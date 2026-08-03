@@ -34,6 +34,40 @@ labels used by jumps and calls resolve to absolute byte addresses.
 | 22 | `call target` | unsigned `u32` | — | Save the next instruction address and jump to `target`. |
 | 23 | `ret` | — | — | Return to the address saved by `call`. |
 
+| 24 | `foreign_call name` | unsigned `u8` import index | `arg1 ... argN -> result` | Call an `extern` declaration. |
+
+## Foreign functions (Windows x64)
+
+Declare a DLL symbol with `extern` and call its local name with
+`foreign_call`:
+
+```asm
+extern MessageBoxA user32.dll MessageBoxA ptr cstr cstr u32
+
+push 0          # HWND = NULL
+push message
+push caption
+push 0          # MB_OK
+foreign_call MessageBoxA
+pop
+halt
+
+caption:
+  asciiz "VIG"
+message:
+  asciiz "Hello from VIG"
+```
+
+The syntax is `extern local_name dll_name symbol_name [argument_type ...]`.
+Imports have zero to four arguments. Types are `i32`, `u32`, `ptr`, and `cstr`.
+Arguments are pushed left-to-right and the return value is a 32-bit integer.
+
+`ptr` and `cstr` are VIG bytecode offsets, never native addresses. `0` becomes
+`NULL`; `cstr` additionally requires a NUL-terminated byte string. Define one
+with `asciiz "text"` after `halt` so execution never reaches it. This first
+version supports Windows x64 integer/pointer functions only; not callbacks,
+structs, floating point, output buffers, or 64-bit return values.
+
 ## Limits and errors
 
 - The data segment contains 256 signed 32-bit slots, so valid data addresses
@@ -43,6 +77,7 @@ labels used by jumps and calls resolve to absolute byte addresses.
 - A jump or call target must point inside the loaded program.
 - Arithmetic traps on signed overflow. `div` and `mod` also trap on division by
   zero.
+- At most 16 foreign imports and four arguments per import are supported.
 
 ## Example
 

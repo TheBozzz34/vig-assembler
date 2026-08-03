@@ -1,0 +1,16 @@
+# Shows a Windows message box. Run this manually: it waits for the dialog to close.
+extern MessageBoxA user32.dll MessageBoxA ptr cstr cstr u32
+
+start:
+  push 0          # HWND = NULL
+  push message
+  push caption
+  push 0          # MB_OK
+  foreign_call MessageBoxA
+  pop             # discard the button result
+  halt
+
+caption:
+  asciiz "VIG"
+message:
+  asciiz "Hello from a VIG foreign call."

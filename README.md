@@ -16,6 +16,11 @@ zig build run -- examples\load_store_call.vigas -o load_store_call.vig
 The example prints `42` and exercises the latest VIG instructions: `load`,
 `store`, `call`, and `ret`.
 
+`examples\get_process_id.vigas` demonstrates a generic Windows DLL import;
+`examples\message_box.vigas` calls `user32.dll!MessageBoxA`. See
+[OPCODES.md](OPCODES.md#foreign-functions-windows-x64) for the `extern`,
+`foreign_call`, and `asciiz` syntax.
+
 ## Source format
 
 One instruction or label appears on each line. Labels end in `:` and resolve to
@@ -32,6 +37,6 @@ loop:
   halt
 ```
 
-`push` accepts signed 32-bit decimal or base-prefixed values. `load` and
-`store` take unsigned 32-bit data addresses. `jmp`, `jmp_zero`,
+`push` accepts a signed 32-bit decimal/base-prefixed value or a label address.
+`load` and `store` take unsigned 32-bit data addresses. `jmp`, `jmp_zero`,
 `jmp_not_zero`, and `call` accept either a label or an explicit byte address.

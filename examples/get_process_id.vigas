@@ -1,0 +1,6 @@
+# A non-interactive foreign-call smoke test. Prints this process's ID.
+extern GetCurrentProcessId kernel32.dll GetCurrentProcessId
+
+foreign_call GetCurrentProcessId
+print
+halt
