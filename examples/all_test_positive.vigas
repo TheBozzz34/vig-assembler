@@ -1,0 +1,657 @@
+# ================================================================
+# VIGasm assembler and VM opcode test suite
+#
+# Expected behavior:
+#
+#   Test 0 prints:
+#       0
+#       12345
+#       1
+#
+#   Tests 1 through 31 each print:
+#       test_number
+#       1
+#
+#   The value 999999 must never be printed.
+#
+# The check subroutine expects:
+#
+#   actual expected
+#
+# It compares them, prints 1 for equality or 0 for inequality,
+# removes the result from the stack, and returns.
+# ================================================================
+
+
+start:
+
+  # --------------------------------------------------------------
+  # Test 0: print
+  #
+  # Verifies that print displays the top value without consuming it.
+  # The retained 12345 is subsequently compared with another 12345.
+  # --------------------------------------------------------------
+
+  push 0
+  print
+  pop
+
+  push 12345
+  print
+  push 12345
+  call check
+
+
+  # --------------------------------------------------------------
+  # Test 1: positive push operand
+  # --------------------------------------------------------------
+
+  push 1
+  print
+  pop
+
+  push 123
+  push 123
+  call check
+
+
+  # --------------------------------------------------------------
+  # Test 2: negative push operand
+  # --------------------------------------------------------------
+
+  push 2
+  print
+  pop
+
+  push -456
+  push -456
+  call check
+
+
+  # --------------------------------------------------------------
+  # Test 3: add
+  # 40 + 2 = 42
+  # --------------------------------------------------------------
+
+  push 3
+  print
+  pop
+
+  push 40
+  push 2
+  add
+  push 42
+  call check
+
+
+  # --------------------------------------------------------------
+  # Test 4: sub
+  # 10 - 3 = 7
+  # --------------------------------------------------------------
+
+  push 4
+  print
+  pop
+
+  push 10
+  push 3
+  sub
+  push 7
+  call check
+
+
+  # --------------------------------------------------------------
+  # Test 5: mul
+  # -6 * 7 = -42
+  # --------------------------------------------------------------
+
+  push 5
+  print
+  pop
+
+  push -6
+  push 7
+  mul
+  push -42
+  call check
+
+
+  # --------------------------------------------------------------
+  # Test 6: positive div
+  # 43 / 5 = 8
+  # --------------------------------------------------------------
+
+  push 6
+  print
+  pop
+
+  push 43
+  push 5
+  div
+  push 8
+  call check
+
+
+  # --------------------------------------------------------------
+  # Test 7: negative div
+  # Division should truncate toward zero:
+  # -43 / 5 = -8
+  # --------------------------------------------------------------
+
+  push 7
+  print
+  pop
+
+  push -43
+  push 5
+  div
+  push -8
+  call check
+
+
+  # --------------------------------------------------------------
+  # Test 8: positive mod
+  # 43 % 5 = 3
+  # --------------------------------------------------------------
+
+  push 8
+  print
+  pop
+
+  push 43
+  push 5
+  mod
+  push 3
+  call check
+
+
+  # --------------------------------------------------------------
+  # Test 9: negative mod
+  # With truncation toward zero:
+  # -43 % 5 = -3
+  # --------------------------------------------------------------
+
+  push 9
+  print
+  pop
+
+  push -43
+  push 5
+  mod
+  push -3
+  call check
+
+
+  # --------------------------------------------------------------
+  # Test 10: eq, true result
+  # --------------------------------------------------------------
+
+  push 10
+  print
+  pop
+
+  push 55
+  push 55
+  eq
+  push 1
+  call check
+
+
+  # --------------------------------------------------------------
+  # Test 11: eq, false result
+  # --------------------------------------------------------------
+
+  push 11
+  print
+  pop
+
+  push 55
+  push 56
+  eq
+  push 0
+  call check
+
+
+  # --------------------------------------------------------------
+  # Test 12: ne
+  # --------------------------------------------------------------
+
+  push 12
+  print
+  pop
+
+  push 55
+  push 56
+  ne
+  push 1
+  call check
+
+
+  # --------------------------------------------------------------
+  # Test 13: lt
+  # --------------------------------------------------------------
+
+  push 13
+  print
+  pop
+
+  push -10
+  push 5
+  lt
+  push 1
+  call check
+
+
+  # --------------------------------------------------------------
+  # Test 14: lte
+  # Test equality case.
+  # --------------------------------------------------------------
+
+  push 14
+  print
+  pop
+
+  push 5
+  push 5
+  lte
+  push 1
+  call check
+
+
+  # --------------------------------------------------------------
+  # Test 15: gt
+  # --------------------------------------------------------------
+
+  push 15
+  print
+  pop
+
+  push 100
+  push 20
+  gt
+  push 1
+  call check
+
+
+  # --------------------------------------------------------------
+  # Test 16: gte
+  # Test equality case.
+  # --------------------------------------------------------------
+
+  push 16
+  print
+  pop
+
+  push 20
+  push 20
+  gte
+  push 1
+  call check
+
+
+  # --------------------------------------------------------------
+  # Test 17: dup
+  # 21 becomes 21 21, then add produces 42.
+  # --------------------------------------------------------------
+
+  push 17
+  print
+  pop
+
+  push 21
+  dup
+  add
+  push 42
+  call check
+
+
+  # --------------------------------------------------------------
+  # Test 18: pop
+  #
+  # If pop does not remove 999, this test will either fail or leave
+  # unwanted stack data behind.
+  # --------------------------------------------------------------
+
+  push 18
+  print
+  pop
+
+  push 999
+  pop
+  push 42
+  push 42
+  call check
+
+
+  # --------------------------------------------------------------
+  # Test 19: swap
+  #
+  # Before swap: 2 40
+  # After swap:  40 2
+  # Division:    40 / 2 = 20
+  # --------------------------------------------------------------
+
+  push 19
+  print
+  pop
+
+  push 2
+  push 40
+  swap
+  div
+  push 20
+  call check
+
+
+  # --------------------------------------------------------------
+  # Test 20: store and load
+  # --------------------------------------------------------------
+
+  push 20
+  print
+  pop
+
+  push 314159
+  store 7
+  load 7
+  push 314159
+  call check
+
+
+  # --------------------------------------------------------------
+  # Test 21: unconditional forward jmp
+  #
+  # The failure code must be skipped.
+  # --------------------------------------------------------------
+
+  push 21
+  print
+  pop
+
+  jmp test_21_pass
+
+  # Unreachable failure path.
+  push 0
+  print
+  halt
+
+test_21_pass:
+
+  push 1
+  push 1
+  call check
+
+
+  # --------------------------------------------------------------
+  # Test 22: jmp_zero, branch taken
+  # --------------------------------------------------------------
+
+  push 22
+  print
+  pop
+
+  push 0
+  jmp_zero test_22_pass
+
+  push 0
+  print
+  halt
+
+test_22_pass:
+
+  push 1
+  push 1
+  call check
+
+
+  # --------------------------------------------------------------
+  # Test 23: jmp_zero, branch not taken
+  # --------------------------------------------------------------
+
+  push 23
+  print
+  pop
+
+  push 1
+  jmp_zero test_23_fail
+
+  push 1
+  push 1
+  call check
+  jmp test_23_done
+
+test_23_fail:
+
+  push 0
+  print
+  halt
+
+test_23_done:
+
+
+  # --------------------------------------------------------------
+  # Test 24: jmp_not_zero, branch taken
+  # --------------------------------------------------------------
+
+  push 24
+  print
+  pop
+
+  push -1
+  jmp_not_zero test_24_pass
+
+  push 0
+  print
+  halt
+
+test_24_pass:
+
+  push 1
+  push 1
+  call check
+
+
+  # --------------------------------------------------------------
+  # Test 25: jmp_not_zero, branch not taken
+  # --------------------------------------------------------------
+
+  push 25
+  print
+  pop
+
+  push 0
+  jmp_not_zero test_25_fail
+
+  push 1
+  push 1
+  call check
+  jmp test_25_done
+
+test_25_fail:
+
+  push 0
+  print
+  halt
+
+test_25_done:
+
+
+  # --------------------------------------------------------------
+  # Test 26: call and ret
+  #
+  # return_77 pushes 77 and returns to this location.
+  # --------------------------------------------------------------
+
+  push 26
+  print
+  pop
+
+  call return_77
+  push 77
+  call check
+
+
+  # --------------------------------------------------------------
+  # Test 27: nested call and ret
+  #
+  # nested_outer calls nested_inner.
+  # nested_inner pushes 20.
+  # nested_outer adds 22, producing 42.
+  # --------------------------------------------------------------
+
+  push 27
+  print
+  pop
+
+  call nested_outer
+  push 42
+  call check
+
+
+  # --------------------------------------------------------------
+  # Test 28: backward jump and loop
+  #
+  # Computes:
+  #
+  #   5 + 4 + 3 + 2 + 1 = 15
+  #
+  # Data slot 0: loop counter
+  # Data slot 1: accumulator
+  #
+  # This tests backward label resolution, repeated load/store, dup,
+  # arithmetic, and jmp_not_zero.
+  # --------------------------------------------------------------
+
+  push 28
+  print
+  pop
+
+  push 5
+  store 0
+
+  push 0
+  store 1
+
+test_28_loop:
+
+  # accumulator += counter
+  load 1
+  load 0
+  add
+  store 1
+
+  # counter -= 1
+  #
+  # dup keeps one copy for store and one copy for the branch.
+  load 0
+  push 1
+  sub
+  dup
+  store 0
+
+  jmp_not_zero test_28_loop
+
+  load 1
+  push 15
+  call check
+
+
+  # --------------------------------------------------------------
+  # Test 29: highest valid data address
+  # --------------------------------------------------------------
+
+  push 29
+  print
+  pop
+
+  push -987654
+  store 255
+  load 255
+  push -987654
+  call check
+
+
+  # --------------------------------------------------------------
+  # Test 30: minimum signed i32 literal
+  #
+  # This checks assembler parsing and four-byte operand encoding.
+  # No arithmetic is performed because negating or subtracting this
+  # value could overflow.
+  # --------------------------------------------------------------
+
+  push 30
+  print
+  pop
+
+  push -2147483648
+  push -2147483648
+  call check
+
+
+  # --------------------------------------------------------------
+  # Test 31: maximum signed i32 literal
+  # --------------------------------------------------------------
+
+  push 31
+  print
+  pop
+
+  push 2147483647
+  push 2147483647
+  call check
+
+
+  # --------------------------------------------------------------
+  # halt test
+  #
+  # The sentinel after halt must never execute.
+  # --------------------------------------------------------------
+
+  halt
+
+  push 999999
+  print
+  halt
+
+
+# ================================================================
+# Subroutines
+# ================================================================
+
+# Compare the top two stack values.
+#
+# Input:
+#   actual expected
+#
+# Output:
+#   Prints 1 if equal, otherwise 0.
+#
+# Stack is restored to its prior depth before returning.
+check:
+
+  eq
+  print
+  pop
+  ret
+
+
+# Used by Test 26.
+return_77:
+
+  push 77
+  ret
+
+
+# Used by Test 27.
+nested_outer:
+
+  call nested_inner
+  push 22
+  add
+  ret
+
+
+nested_inner:
+
+  push 20
+  ret
