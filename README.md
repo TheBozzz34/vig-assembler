@@ -69,3 +69,12 @@ zig build run -- examples\array_sum.vigas -o array_sum.vig
 ```
 
 It prints `285`.
+
+`examples\bubble_sort.vigas` sorts a ten-element array in place. Its inner loop
+compares `data[j]` against `data[j + 1]` and swaps them, so every access is a
+computed address:
+
+```powershell
+zig build run -- examples\bubble_sort.vigas -o bubble_sort.vig
+..\vig\zig-out\bin\vig.exe bubble_sort.vig
+```
