@@ -1,0 +1,125 @@
+# ==================================================================
+# VIG foreign-call integration suite (Windows x64)
+#
+# Every test prints its number followed by 1 on success. The suite is
+# non-interactive and read-only: it does not open a window or create files.
+#
+# Covered features:
+#   - dynamic lookup from kernel32.dll and user32.dll
+#   - local import aliases
+#   - zero, one, two, three, and four argument calls
+#   - i32, u32, cstr, and a NULL pointer represented by zero
+#   - static string labels and 32-bit result values
+# ==================================================================
+
+extern ProcessId kernel32.dll GetCurrentProcessId
+extern StringLength kernel32.dll lstrlenA cstr
+extern CompareStrings kernel32.dll lstrcmpA cstr cstr
+extern MultiplyDivide kernel32.dll MulDiv i32 i32 i32
+extern SystemMetric user32.dll GetSystemMetrics u32
+extern ReadMissingIni kernel32.dll GetPrivateProfileIntA cstr cstr u32 cstr
+
+start:
+
+  # Test 0: zero arguments and a nonzero result.
+  push 0
+  print
+  pop
+  foreign_call ProcessId
+  push 0
+  gt
+  push 1
+  call check
+
+  # Test 1: one cstr argument. "VIG foreign" is 11 bytes.
+  push 1
+  print
+  pop
+  push test_text
+  foreign_call StringLength
+  push 11
+  call check
+
+  # Test 2: two cstr arguments and a local alias for lstrcmpA.
+  push 2
+  print
+  pop
+  push same_text_a
+  push same_text_b
+  foreign_call CompareStrings
+  push 0
+  call check
+
+  # Test 3: three signed arguments, with a positive result.
+  # MulDiv(21, 2, 3) == 14.
+  push 3
+  print
+  pop
+  push 21
+  push 2
+  push 3
+  foreign_call MultiplyDivide
+  push 14
+  call check
+
+  # Test 4: signed values are sign-extended for the Windows x64 ABI.
+  # MulDiv(-21, 2, 3) == -14.
+  push 4
+  print
+  pop
+  push -21
+  push 2
+  push 3
+  foreign_call MultiplyDivide
+  push -14
+  call check
+
+  # Test 5: one u32 argument. Compare two independent calls instead
+  # of asserting a machine-specific display metric.
+  push 5
+  print
+  pop
+  push 0                  # SM_CXSCREEN
+  foreign_call SystemMetric
+  push 0
+  foreign_call SystemMetric
+  call check
+
+  # Test 6: four arguments. The deliberately missing INI file makes
+  # GetPrivateProfileIntA return the supplied default value (24680).
+  push 6
+  print
+  pop
+  push missing_section
+  push missing_key
+  push 24680
+  push missing_ini_path
+  foreign_call ReadMissingIni
+  push 24680
+  call check
+
+  halt
+
+
+# Compare the top two values and print 1 for equality.
+# Input: actual expected
+check:
+  eq
+  print
+  pop
+  ret
+
+
+# Static data is intentionally placed after halt.
+test_text:
+  asciiz "VIG foreign"
+same_text_a:
+  asciiz "same text"
+same_text_b:
+  asciiz "same text"
+missing_section:
+  asciiz "VIG_FOREIGN_CALL_SUITE_SECTION_39B41C"
+missing_key:
+  asciiz "VIG_FOREIGN_CALL_SUITE_KEY_39B41C"
+missing_ini_path:
+  asciiz "VIG_FOREIGN_CALL_SUITE_39B41C_DOES_NOT_EXIST.ini"

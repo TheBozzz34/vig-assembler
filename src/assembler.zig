@@ -109,10 +109,14 @@ pub fn assemble(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
             .value_or_target => {
                 const operand = tokens.next() orelse return error.MissingOperand;
                 if (tokens.next() != null) return error.UnexpectedOperand;
-                const address = labels.get(operand) orelse try std.fmt.parseInt(usize, operand, 0);
-                if (address > std.math.maxInt(i32)) return error.AddressOutOfRange;
                 var bytes: [4]u8 = undefined;
-                std.mem.writeInt(i32, &bytes, @intCast(address), .little);
+                if (labels.get(operand)) |address| {
+                    if (address > std.math.maxInt(i32)) return error.AddressOutOfRange;
+                    std.mem.writeInt(i32, &bytes, @intCast(address), .little);
+                } else {
+                    const value = try std.fmt.parseInt(i32, operand, 0);
+                    std.mem.writeInt(i32, &bytes, value, .little);
+                }
                 try output.appendSlice(allocator, &bytes);
             },
             .u32_address => {
@@ -243,6 +247,7 @@ fn instructionFor(operation: []const u8) !Instruction {
         .{ "jmp_not_zero", 19, .target }, .{ "load", 20, .u32_address },
         .{ "store", 21, .u32_address }, .{ "call", 22, .target }, .{ "ret", 23, .none },
         .{ "foreign_call", 24, .foreign_import },
+        .{ "print_string", 25, .none },
     };
 
     inline for (definitions) |definition| {
@@ -290,6 +295,43 @@ test "assembles a foreign-import container and call" {
     ;
     const expected = "VIGF" ++ [_]u8{ 1, 1, 12, 19, 0 } ++
         "kernel32.dllGetCurrentProcessId" ++ [_]u8{ 24, 0, 0 };
+    const output = try assemble(std.testing.allocator, source);
+    defer std.testing.allocator.free(output);
+    try std.testing.expectEqualSlices(u8, &expected, output);
+}
+
+test "push accepts signed literals and label addresses" {
+    const source =
+        \\  push -42
+        \\  push data
+        \\  halt
+        \\data:
+        \\  asciiz "x"
+    ;
+    const expected = [_]u8{
+        1, 0xd6, 0xff, 0xff, 0xff,
+        1, 11, 0, 0, 0,
+        0,
+        'x', 0,
+    };
+    const output = try assemble(std.testing.allocator, source);
+    defer std.testing.allocator.free(output);
+    try std.testing.expectEqualSlices(u8, &expected, output);
+}
+
+test "assembles print_string" {
+    const source =
+        \\  push text
+        \\  print_string
+        \\  halt
+        \\text:
+        \\  asciiz "ok"
+    ;
+    const expected = [_]u8{
+        1, 7, 0, 0, 0,
+        25, 0,
+        'o', 'k', 0,
+    };
     const output = try assemble(std.testing.allocator, source);
     defer std.testing.allocator.free(output);
     try std.testing.expectEqualSlices(u8, &expected, output);

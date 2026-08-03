@@ -21,6 +21,23 @@ The example prints `42` and exercises the latest VIG instructions: `load`,
 [OPCODES.md](OPCODES.md#foreign-functions-windows-x64) for the `extern`,
 `foreign_call`, and `asciiz` syntax.
 
+`examples\print_string.vigas` demonstrates `asciiz` data and the built-in
+`print_string` instruction.
+
+## Foreign-call integration suite
+
+On Windows, assemble and run the non-interactive foreign-call suite with:
+
+```powershell
+zig build run -- examples\foreign_calls_positive.vigas -o foreign_calls_positive.vig
+..\vig\zig-out\bin\vig.exe foreign_calls_positive.vig
+```
+
+It prints each test number (`0` through `6`) followed by `1`. The suite covers
+generic resolution from `kernel32.dll` and `user32.dll`, aliases, zero through
+four arguments, integer marshalling, and VIG-managed C strings without opening
+UI or writing files.
+
 ## Source format
 
 One instruction or label appears on each line. Labels end in `:` and resolve to

@@ -1,0 +1,8 @@
+# Prints a NUL-terminated string stored in VIG bytecode.
+push greeting
+print_string
+pop
+halt
+
+greeting:
+  asciiz "Hello from VIG!"

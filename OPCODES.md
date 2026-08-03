@@ -36,6 +36,28 @@ labels used by jumps and calls resolve to absolute byte addresses.
 
 | 24 | `foreign_call name` | unsigned `u8` import index | `arg1 ... argN -> result` | Call an `extern` declaration. |
 
+| 25 | `print_string` | â€” | `address â†’ address` | Print the NUL-terminated string at a VIG bytecode address. |
+
+## Strings
+
+Use `asciiz` to place a NUL-terminated string in the program, then push its
+label and call `print_string`. Keep static data after `halt` so it is not
+executed as bytecode.
+
+```asm
+push greeting
+print_string
+pop
+halt
+
+greeting:
+  asciiz "Hello from VIG!"
+```
+
+`print_string` leaves the address on the stack, like integer `print` leaves
+its value. It rejects `0`, negative/out-of-range addresses, and strings whose
+terminator lies outside the loaded program.
+
 ## Foreign functions (Windows x64)
 
 Declare a DLL symbol with `extern` and call its local name with
