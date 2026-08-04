@@ -4,8 +4,8 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Opcodes, the container format, and the verifier are shared with the VM
-    // rather than reimplemented here.
+    // The assembler shares the opcodes, the container format and the verifier
+    // with the VM. This build does not make them again.
     const bytecode = b.dependency("vig_bytecode", .{
         .target = target,
         .optimize = optimize,
@@ -28,9 +28,9 @@ pub fn build(b: *std.Build) void {
     run_cmd.addPassthruArgs();
     run_step.dependOn(&run_cmd.step);
 
-    // A test executable only collects `test` blocks from its own root file, so
-    // every source file holding tests needs its own entry here. Rooting only at
-    // main.zig silently ran zero tests.
+    // A test executable collects the `test` blocks from its own root file only.
+    // Therefore each source file that has tests needs an entry here. With
+    // `main.zig` as the only root, the build ran no test and gave no message.
     const test_roots = [_][]const u8{ "src/main.zig", "src/assembler.zig" };
 
     const test_step = b.step("test", "Run unit tests");

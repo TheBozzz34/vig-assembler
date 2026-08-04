@@ -7,9 +7,10 @@ const foreign = bytecode.foreign;
 const verify = bytecode.verify;
 const OpCode = bytecode.OpCode;
 
-/// Which region of the program a label points into. Static data is assembled
-/// separately from code, so a data label's final address is only known once the
-/// code length is: it is `code_len + offset`.
+/// The region of the program that a label points into. The assembler makes the
+/// static data apart from the code. Therefore it knows the final address of a
+/// data label only after it knows the length of the code. That address is
+/// `code_len + offset`.
 const Region = enum { code, data };
 
 const Label = struct {
@@ -17,15 +18,18 @@ const Label = struct {
     offset: usize,
 };
 
-/// Assembler output that is not a program: currently the location of a failed
-/// verification, which the caller can report alongside the error.
+/// The output of the assembler that is not a program. At this time it holds the
+/// location of a failure in the verifier. The caller can show this location with
+/// the error.
 pub const Diagnostics = struct {
     verification: ?verify.Failure = null,
 };
 
-/// Assemble `source` into a VIG container. The returned program is verified:
-/// every reachable instruction decodes, every branch lands on an instruction
-/// boundary, and control never runs off the end of the code.
+/// Assemble `source` into a VIG container. The verifier then makes sure that:
+///
+/// - each instruction that the program can reach decodes;
+/// - each branch goes to the first byte of an instruction;
+/// - control does not continue past the end of the code.
 pub fn assemble(allocator: std.mem.Allocator, source: []const u8, diagnostics: ?*Diagnostics) ![]u8 {
     var labels = std.StringHashMap(Label).init(allocator);
     defer labels.deinit();
@@ -34,8 +38,9 @@ pub fn assemble(allocator: std.mem.Allocator, source: []const u8, diagnostics: ?
     var imports = std.ArrayList(foreign.Import).empty;
     defer imports.deinit(allocator);
 
-    // Labels take the address of the next thing emitted, which may be an
-    // instruction or a string, so they are held until that is known.
+    // A label takes the address of the next item that the assembler writes. That
+    // item can be an instruction or a string. Therefore the assembler holds each
+    // label until it knows the address.
     var pending_labels = std.ArrayList([]const u8).empty;
     defer pending_labels.deinit(allocator);
 
@@ -43,7 +48,7 @@ pub fn assemble(allocator: std.mem.Allocator, source: []const u8, diagnostics: ?
     var data_len: usize = 0;
     var entry_label: ?[]const u8 = null;
 
-    // Pass one: measure the two regions and place every label.
+    // Pass one: measure the two regions and put each label at its address.
     var lines = std.mem.splitScalar(u8, source, '\n');
     while (lines.next()) |raw_line| {
         const line = meaningfulLine(raw_line);
@@ -81,10 +86,10 @@ pub fn assemble(allocator: std.mem.Allocator, source: []const u8, diagnostics: ?
         try place(&labels, &pending_labels, .code, code_len);
         code_len += (try parseInstruction(line)).size();
     }
-    // A label after the last instruction addresses the end of the code.
+    // A label after the last instruction has the address of the end of the code.
     try place(&labels, &pending_labels, .code, code_len);
 
-    // Pass two: emit. Both regions are exactly the size pass one measured.
+    // Pass two: write the output. Each region has exactly the size from pass one.
     var code = try std.ArrayList(u8).initCapacity(allocator, code_len);
     defer code.deinit(allocator);
     var data = try std.ArrayList(u8).initCapacity(allocator, data_len);
@@ -130,7 +135,7 @@ pub fn assemble(allocator: std.mem.Allocator, source: []const u8, diagnostics: ?
     return output;
 }
 
-/// Give every label waiting on the next emitted item its address.
+/// Give the address to each label that waits for the next item in the output.
 fn place(
     labels: *std.StringHashMap(Label),
     pending: *std.ArrayList([]const u8),
@@ -153,8 +158,8 @@ const Scope = struct {
     imports_by_name: *const std.StringHashMap(u8),
     code_len: usize,
 
-    /// A label's absolute address in the loaded program image, which is the code
-    /// region followed by the static-data region.
+    /// The absolute address of a label in the program image. That image is the
+    /// code region, then the static-data region.
     fn address(self: Scope, name: []const u8) ?usize {
         const label = self.labels.get(name) orelse return null;
         return switch (label.region) {
@@ -201,8 +206,8 @@ fn codeTarget(label: ?usize, text: []const u8) !u32 {
 fn resolveEntryPoint(entry_label: ?[]const u8, labels: *const std.StringHashMap(Label)) !u32 {
     const name = entry_label orelse return 0;
     const label = labels.get(name) orelse return error.UnknownEntryPointLabel;
-    // Execution starts at an instruction, so the entry point cannot name a
-    // string in the static-data region.
+    // Execution starts at an instruction. Therefore the entry point cannot
+    // name a string in the static-data region.
     if (label.region != .code) return error.InvalidEntryPoint;
     return std.math.cast(u32, label.offset) orelse error.AddressOutOfRange;
 }
@@ -279,7 +284,8 @@ fn parseAsciiz(line: []const u8) ![]const u8 {
     return contents;
 }
 
-/// Check an instruction line's shape in pass one, before labels are resolvable.
+/// Check the form of an instruction line in pass one, before the labels have
+/// addresses.
 fn parseInstruction(line: []const u8) !OpCode {
     var tokens = std.mem.tokenizeAny(u8, line, " \t,");
     const instruction = try opCodeFor(tokens.next() orelse return error.InvalidSyntax);
@@ -301,9 +307,9 @@ fn opCodeFor(mnemonic: []const u8) !OpCode {
 
 const testing = std.testing;
 
-/// Assemble `source` and assert on the two regions of the resulting container,
-/// which is more legible than a golden byte string of the whole file. The header
-/// layout itself is covered by the vig-bytecode tests.
+/// Assemble `source` and check the two regions of the container. These checks
+/// are easier to read than a check on the bytes of the complete file. The
+/// vig-bytecode tests check the layout of the header.
 fn expectRegions(source: []const u8, expected_code: []const u8, expected_data: []const u8) !void {
     const output = try assemble(testing.allocator, source, null);
     defer testing.allocator.free(output);
@@ -342,8 +348,9 @@ test "assembles labels and the newest VIG opcodes" {
 }
 
 test "static data is assembled after the code, not inside it" {
-    // `greeting` is declared before `halt` but still lands in the data region,
-    // so its address is past the end of the code and it can never be executed.
+    // The source declares `greeting` before `halt`, but the assembler puts it in
+    // the data region. Therefore its address is past the end of the code, and the
+    // VM can never execute it.
     const source =
         \\  push greeting
         \\  print_string
@@ -376,7 +383,7 @@ test "several strings keep their declaration order in the data region" {
         \\second:
         \\  asciiz "bc"
     ;
-    // "a\0" occupies data offsets 0 and 1, so `second` is at code_len + 2.
+    // "a\0" uses data offsets 0 and 1. Therefore `second` is at `code_len` + 2.
     try expectRegions(source, &[_]u8{ 1, 9, 0, 0, 0, 25, 0 }, "a\x00bc\x00");
 }
 
@@ -398,7 +405,8 @@ test "assembles a foreign-import container and call" {
     try testing.expectEqualStrings("kernel32.dll", import.library);
     try testing.expectEqualStrings("GetCurrentProcessId", import.symbol);
     try testing.expectEqual(@as(usize, 0), import.argTypes().len);
-    // The declared table length has to match what the imports actually occupy.
+    // The declared length of the table must be equal to the length that the
+    // imports use.
     try testing.expectEqual(iterator.offset, image.header.import_table_len);
 }
 
@@ -533,7 +541,8 @@ test "labels are unique and resolve in either direction" {
         error.DuplicateLabel,
         assemble(testing.allocator, "a:\n  halt\na:\n  halt", null),
     );
-    // Two labels on consecutive lines address the same instruction.
+    // Two labels on two lines that come one after the other have the same
+    // address.
     try testing.expectError(
         error.DuplicateLabel,
         assemble(testing.allocator, "a:\na:\n  halt", null),
@@ -553,7 +562,8 @@ test "rejects malformed operands and string literals" {
     try testing.expectError(error.UnexpectedOperand, assemble(testing.allocator, "halt 1", null));
     try testing.expectError(error.UnexpectedOperand, assemble(testing.allocator, "push 1 2", null));
     try testing.expectError(error.InvalidStringLiteral, assemble(testing.allocator, "asciiz nope", null));
-    // A data address is never a label, so a label there is a parse failure.
+    // A data address is never a label. Therefore a label in that position is a
+    // failure in the parse.
     try testing.expectError(
         error.InvalidCharacter,
         assemble(testing.allocator, "store here\nhere:\nhalt", null),
@@ -561,8 +571,8 @@ test "rejects malformed operands and string literals" {
 }
 
 test "verification rejects a program whose control flow leaves the code" {
-    // Falling off the end of the code region is caught at assembly time rather
-    // than being left to the VM.
+    // The assembler finds this error: control continues past the end of the code
+    // region. The VM does not have to find it.
     var diagnostics: Diagnostics = .{};
     try testing.expectError(
         error.ExecutionRunsOffEnd,
@@ -570,13 +580,13 @@ test "verification rejects a program whose control flow leaves the code" {
     );
     try testing.expectEqual(@as(usize, 0), diagnostics.verification.?.offset);
 
-    // A jump into the middle of an instruction cannot be written with labels, so
-    // it takes an explicit address.
+    // A label cannot make a jump into the middle of an instruction. Therefore
+    // this test uses an absolute address.
     try testing.expectError(
         error.MisalignedTarget,
         assemble(testing.allocator, "push 1\njmp 1", null),
     );
-    // A jump into the static-data region lands outside the code entirely.
+    // A jump into the static-data region goes fully outside the code.
     try testing.expectError(
         error.TargetOutOfRange,
         assemble(testing.allocator, "jmp text\nhalt\ntext:\n  asciiz \"x\"", null),
