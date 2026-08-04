@@ -1,0 +1,38 @@
+# The assembler depends on vig-bytecode through a path: `../vig-bytecode` in
+# build.zig.zon. Therefore this workflow checks out the two repositories side by
+# side, in the layout that a developer has locally, and does not fetch the shared
+# package from a release.
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: vig-assembler
+
+      # The path dependency needs this checkout to be a sibling directory.
+      - uses: actions/checkout@v4
+        with:
+          repository: TheBozzz34/vig-bytecode
+          path: vig-bytecode
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          # This value must be the `minimum_zig_version` of build.zig.zon. See
+          # the note in the vig-bytecode workflow.
+          version: 0.17.0-dev.1543+6db520a4c
+
+      - run: zig build test --summary all
+        working-directory: vig-assembler

@@ -12,5 +12,9 @@
         "build.zig",
         "build.zig.zon",
         "src",
+        // The example programs are part of the package. The VM assembles each one
+        // and runs it in a test, so a dependent needs these files and not only
+        // the assembler itself.
+        "examples",
     },
 }

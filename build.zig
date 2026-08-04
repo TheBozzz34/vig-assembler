@@ -11,6 +11,17 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     }).module("vig_bytecode");
 
+    // This module is available to each dependent package, in the same way as
+    // `vig_bytecode`. The assembler is a library first and the `vigasm`
+    // executable second. Therefore the VM can assemble a program in a test and
+    // then run it, and no test has to encode instruction bytes by hand.
+    _ = b.addModule("vig_assembler", .{
+        .root_source_file = b.path("src/assembler.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "vig_bytecode", .module = bytecode }},
+    });
+
     const exe = b.addExecutable(.{
         .name = "vigasm",
         .root_module = b.createModule(.{
