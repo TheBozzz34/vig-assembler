@@ -83,6 +83,12 @@ pub fn assemble(allocator: std.mem.Allocator, source: []const u8, diagnostics: ?
             continue;
         }
 
+        if (isDirective(line, "reserve")) {
+            try place(&labels, &pending_labels, .data, data_len);
+            data_len += try parseReserve(line);
+            continue;
+        }
+
         try place(&labels, &pending_labels, .code, code_len);
         code_len += (try parseInstruction(line)).size();
     }
@@ -104,6 +110,11 @@ pub fn assemble(allocator: std.mem.Allocator, source: []const u8, diagnostics: ?
         if (isDirective(line, "asciiz")) {
             try data.appendSlice(allocator, try parseAsciiz(line));
             try data.append(allocator, 0);
+            continue;
+        }
+
+        if (isDirective(line, "reserve")) {
+            try data.appendNTimes(allocator, 0, try parseReserve(line));
             continue;
         }
 
@@ -282,6 +293,26 @@ fn parseAsciiz(line: []const u8) ![]const u8 {
         return error.InvalidStringLiteral;
     }
     return contents;
+}
+
+/// `reserve N` gives the label before it `N` zero bytes in the static-data region.
+/// A program then has a name for storage that it can write, because the code region
+/// is read-only and an `asciiz` string is a fixed value.
+///
+/// The bytes are in the container, so they are bytes of the file. A later stage
+/// records a zero-filled length in the header instead, and then a large array costs
+/// nothing in the file.
+fn parseReserve(line: []const u8) !usize {
+    var tokens = std.mem.tokenizeAny(u8, line, " \t,");
+    _ = tokens.next(); // reserve
+    const text = tokens.next() orelse return error.MissingOperand;
+    if (tokens.next() != null) return error.UnexpectedOperand;
+
+    const size = try std.fmt.parseInt(usize, text, 0);
+    // A zero size gives the label the address of whatever comes after it, which is
+    // never what the author meant.
+    if (size == 0) return error.InvalidReserveSize;
+    return size;
 }
 
 /// Check the form of an instruction line in pass one, before the labels have
@@ -609,6 +640,64 @@ test "verification rejects a program whose control flow leaves the code" {
     try testing.expectError(
         error.TargetOutOfRange,
         assemble(testing.allocator, "jmp text\nhalt\ntext:\n  asciiz \"x\"", null),
+    );
+}
+
+test "reserve places zero bytes in the data region and labels them" {
+    // `slot` is at the start of the data region and `flag` is four bytes after it.
+    // The code is 11 bytes, so the two addresses are 11 and 15.
+    const source =
+        \\  push slot
+        \\  push flag
+        \\  halt
+        \\slot:
+        \\  reserve 4
+        \\flag:
+        \\  reserve 1
+    ;
+    const expected_code = [_]u8{
+        1, 11, 0, 0, 0,
+        1, 15, 0, 0, 0,
+        0,
+    };
+    try expectRegions(source, &expected_code, &[_]u8{ 0, 0, 0, 0, 0 });
+}
+
+test "reserve and asciiz share the data region in declaration order" {
+    const source =
+        \\  push text
+        \\  push buffer
+        \\  halt
+        \\text:
+        \\  asciiz "ab"
+        \\buffer:
+        \\  reserve 2
+    ;
+    // "ab\0" uses data offsets 0 to 2, so `buffer` is at code_len + 3 = 14.
+    const expected_code = [_]u8{
+        1, 11, 0, 0, 0,
+        1, 14, 0, 0, 0,
+        0,
+    };
+    try expectRegions(source, &expected_code, "ab\x00\x00\x00");
+}
+
+test "rejects a reserve with no size, a zero size, or extra tokens" {
+    try testing.expectError(
+        error.MissingOperand,
+        assemble(testing.allocator, "halt\nx:\n  reserve", null),
+    );
+    try testing.expectError(
+        error.InvalidReserveSize,
+        assemble(testing.allocator, "halt\nx:\n  reserve 0", null),
+    );
+    try testing.expectError(
+        error.UnexpectedOperand,
+        assemble(testing.allocator, "halt\nx:\n  reserve 4 8", null),
+    );
+    try testing.expectError(
+        error.InvalidCharacter,
+        assemble(testing.allocator, "halt\nx:\n  reserve four", null),
     );
 }
 

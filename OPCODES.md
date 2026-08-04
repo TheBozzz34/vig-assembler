@@ -53,6 +53,14 @@ VM share.
 | 37 | `read_byte` | — | `→ byte` | Read one raw input byte, or push `-1` at end of input. |
 | 38 | `print_hex` | — | `a → a` | Print the top value as eight lowercase hexadecimal digits. |
 | 39 | `write_byte` | — | `byte →` | Pop one value and write its low byte to the output stream. |
+| 40 | `load8_u` | — | `address → u8 at address` | Push the byte at `address`. The upper 24 bits are zero. |
+| 41 | `load8_s` | — | `address → i8 at address` | Push the byte at `address`, with its sign extended to 32 bits. |
+| 42 | `load16_u` | — | `address → u16 at address` | Push the 16-bit value at `address`. The upper 16 bits are zero. |
+| 43 | `load16_s` | — | `address → i16 at address` | Push the 16-bit value at `address`, with its sign extended to 32 bits. |
+| 44 | `load32` | — | `address → i32 at address` | Push the 32-bit value at `address`. |
+| 45 | `store8` | — | `value address →` | Write the low 8 bits of `value` to `address`. |
+| 46 | `store16` | — | `value address →` | Write the low 16 bits of `value` to `address`. |
+| 47 | `store32` | — | `value address →` | Write all 32 bits of `value` to `address`. |
 
 Bitwise instructions operate on the raw two's-complement representation of each
 `i32`. Shift and rotation counts use only their low five bits, so all counts are
@@ -128,6 +136,59 @@ load_at     # → 7
 Both instructions fault with `SegmentFault` on a negative address or one at or
 beyond the end of the data segment. `examples\array_sum.vigas` fills and then
 sums a ten-element array with computed addresses.
+
+## Byte-addressed memory
+
+`load8_u` through `store32` address the memory of the VM by byte. That memory is
+the program image — the code, then the static data — followed by space that starts
+as zeros. An address is a plain byte offset into it, so it means the same thing
+here as it does to `print_string` or to a `cstr` foreign argument, and `push
+label` produces one directly:
+
+```asm
+    push greeting
+    load8_u         # → 104, the 'h' of "hi"
+    halt
+greeting:
+    asciiz "hi"
+```
+
+These are separate from `load`, `store`, `load_at` and `store_at`. Those four
+index the i32 data segment by slot, which is a different space: `load 4` reads the
+fifth slot of the segment, while `load32` with 4 on the stack reads the four bytes
+at offset 4 of memory. The globals move out of the segment in a later stage.
+
+`reserve` gives a label some zero-filled bytes to work with:
+
+```asm
+    push 1000
+    push counter
+    store32
+    push counter
+    load32          # → 1000
+    halt
+counter:
+    reserve 4
+```
+
+Three rules apply to every one of these instructions:
+
+- **A write cannot reach the code.** A store below the end of the code region
+  faults with `WriteToCodeRegion`. The verifier checks that region once before a
+  program runs, and a program that could rewrite an instruction would make that
+  check meaningless. Reads are not restricted.
+- **The width is part of the bound.** An address is a fault unless the whole
+  access fits, so `store32` at four bytes from the end of memory faults even
+  though the address itself is inside it. A negative address always faults.
+- **Alignment does not matter.** `load32` at address 1 is as valid as at address
+  4, so a structure can be laid out without a rule from the VM about where a
+  field may sit.
+
+A narrow load comes in two forms because the stack holds an i32 and a narrow
+value has to fill it somehow. `load8_u` puts zeros in the upper 24 bits and
+`load8_s` copies the sign bit into them, which is the difference between
+`unsigned char` and `signed char`. A store needs no such pair: it keeps the low
+bits and does not ask what they mean.
 
 ## Program layout
 
