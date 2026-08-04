@@ -33,6 +33,16 @@ zig build run -- examples\read_i32.vigas -o read_i32.vig
 "21" | ..\vig\zig-out\bin\vig.exe read_i32.vig
 ```
 
+`examples\md5.vigas` is a complete streaming MD5 implementation written in
+VIGasm. It accepts arbitrary binary stdin, performs its own block packing and
+padding, and prints the digest as four eight-digit lines. Concatenating the
+lines gives the conventional 32-digit digest:
+
+```powershell
+zig build run -- examples\md5.vigas -o md5.vig
+cmd /c "..\vig\zig-out\bin\vig.exe md5.vig < input.bin"
+```
+
 ## Foreign-call integration suite
 
 On Windows, assemble and run the non-interactive foreign-call suite with:

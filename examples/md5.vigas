@@ -1,0 +1,618 @@
+# Streaming MD5 in VIGasm.
+#
+# Input:  arbitrary bytes from stdin
+# Output: the canonical 128-bit MD5 digest as four lowercase eight-digit lines
+#
+# Data layout:
+#   0..15    current 512-bit message block
+#   16..19   working state a, b, c, d
+#   20..23   accumulated state A, B, C, D
+#   24       byte position in the current block
+#   25..26   total byte count, low and high u32 words
+#   28..32   temporary values
+#   64..127  MD5 K constants
+#   128..191 rotation counts
+
+entry main
+
+main:
+  call init_tables
+
+  # Initial MD5 state.
+  push 1732584193
+  store 20
+  push -271733879
+  store 21
+  push -1732584194
+  store 22
+  push 271733878
+  store 23
+
+read_loop:
+  read_byte
+  dup
+  push -1
+  eq
+  jmp_not_zero finish_input
+
+  # Pack the byte into the current little-endian block.
+  call put_byte
+
+  # Increment the 64-bit byte count. Since the low word is incremented by one,
+  # a result of zero is exactly the unsigned carry condition.
+  load 25
+  push 1
+  add_wrap
+  dup
+  store 25
+  jmp_not_zero length_done
+  load 26
+  push 1
+  add_wrap
+  store 26
+
+length_done:
+  load 24
+  push 64
+  eq
+  jmp_zero read_loop
+
+  call compress
+  call clear_block
+  push 0
+  store 24
+  jmp read_loop
+
+finish_input:
+  pop
+
+  # Append the mandatory one bit, represented by byte 0x80.
+  push 128
+  call put_byte
+
+  # The final eight bytes hold the original length. If fewer than eight bytes
+  # remain, finish this block and place the length in a new zero block.
+  load 24
+  push 56
+  gt
+  jmp_zero write_length
+
+  call compress
+  call clear_block
+  push 0
+  store 24
+
+write_length:
+  # Convert the two-word byte count to a two-word bit count.
+  load 25
+  push 3
+  shl
+  store 14
+
+  load 26
+  push 3
+  shl
+  load 25
+  push 29
+  shr_u
+  or
+  store 15
+
+  call compress
+
+  # MD5 serializes each state word least-significant byte first. Byte-swap each
+  # word before print_hex so the four output lines concatenate to the canonical
+  # digest.
+  load 20
+  call print_digest_word
+  load 21
+  call print_digest_word
+  load 22
+  call print_digest_word
+  load 23
+  call print_digest_word
+  halt
+
+# Consume one byte from the stack and append it to the current message block.
+put_byte:
+  store 28
+
+  load 24
+  push 2
+  shr_u
+  store 29
+
+  load 29
+  load_at
+  load 28
+  load 24
+  push 3
+  and
+  push 3
+  shl
+  shl
+  or
+  load 29
+  store_at
+
+  load 24
+  push 1
+  add
+  store 24
+  ret
+
+# Clear the sixteen words of the message block.
+clear_block:
+  push 0
+  store 30
+
+clear_loop:
+  push 0
+  load 30
+  store_at
+
+  load 30
+  push 1
+  add
+  dup
+  store 30
+  push 16
+  ne
+  jmp_not_zero clear_loop
+  ret
+
+# Process one 512-bit block.
+compress:
+  load 20
+  store 16
+  load 21
+  store 17
+  load 22
+  store 18
+  load 23
+  store 19
+
+  push 0
+  store 30
+
+round_loop:
+  load 30
+  push 16
+  lt
+  jmp_zero round_2
+
+  # F = (b & c) | (~b & d), g = i
+  load 17
+  load 18
+  and
+  load 17
+  not
+  load 19
+  and
+  or
+  store 31
+  load 30
+  store 29
+  jmp round_update
+
+round_2:
+  load 30
+  push 32
+  lt
+  jmp_zero round_3
+
+  # F = (d & b) | (~d & c), g = (5*i + 1) mod 16
+  load 19
+  load 17
+  and
+  load 19
+  not
+  load 18
+  and
+  or
+  store 31
+  load 30
+  push 5
+  mul
+  push 1
+  add
+  push 16
+  mod
+  store 29
+  jmp round_update
+
+round_3:
+  load 30
+  push 48
+  lt
+  jmp_zero round_4
+
+  # F = b ^ c ^ d, g = (3*i + 5) mod 16
+  load 17
+  load 18
+  xor
+  load 19
+  xor
+  store 31
+  load 30
+  push 3
+  mul
+  push 5
+  add
+  push 16
+  mod
+  store 29
+  jmp round_update
+
+round_4:
+  # F = c ^ (b | ~d), g = (7*i) mod 16
+  load 18
+  load 17
+  load 19
+  not
+  or
+  xor
+  store 31
+  load 30
+  push 7
+  mul
+  push 16
+  mod
+  store 29
+
+round_update:
+  # new_b = b + rotl(a + F + K[i] + M[g], s[i])
+  load 16
+  load 31
+  add_wrap
+
+  load 30
+  push 64
+  add
+  load_at
+  add_wrap
+
+  load 29
+  load_at
+  add_wrap
+
+  load 30
+  push 128
+  add
+  load_at
+  rotl
+
+  load 17
+  add_wrap
+  store 32
+
+  # Rotate the working registers: a=d, d=c, c=b, b=new_b.
+  load 19
+  store 16
+  load 18
+  store 19
+  load 17
+  store 18
+  load 32
+  store 17
+
+  load 30
+  push 1
+  add
+  dup
+  store 30
+  push 64
+  ne
+  jmp_not_zero round_loop
+
+  load 20
+  load 16
+  add_wrap
+  store 20
+  load 21
+  load 17
+  add_wrap
+  store 21
+  load 22
+  load 18
+  add_wrap
+  store 22
+  load 23
+  load 19
+  add_wrap
+  store 23
+  ret
+
+# Print one state word in MD5 byte order.
+print_digest_word:
+  store 28
+
+  load 28
+  push 255
+  and
+  push 24
+  shl
+
+  load 28
+  push 65280
+  and
+  push 8
+  shl
+  or
+
+  load 28
+  push 8
+  shr_u
+  push 65280
+  and
+  or
+
+  load 28
+  push 24
+  shr_u
+  or
+
+  print_hex
+  pop
+  ret
+
+# Populate the standard MD5 K and rotation tables.
+init_tables:
+  push -680876936
+  store 64
+  push -389564586
+  store 65
+  push 606105819
+  store 66
+  push -1044525330
+  store 67
+  push -176418897
+  store 68
+  push 1200080426
+  store 69
+  push -1473231341
+  store 70
+  push -45705983
+  store 71
+  push 1770035416
+  store 72
+  push -1958414417
+  store 73
+  push -42063
+  store 74
+  push -1990404162
+  store 75
+  push 1804603682
+  store 76
+  push -40341101
+  store 77
+  push -1502002290
+  store 78
+  push 1236535329
+  store 79
+  push -165796510
+  store 80
+  push -1069501632
+  store 81
+  push 643717713
+  store 82
+  push -373897302
+  store 83
+  push -701558691
+  store 84
+  push 38016083
+  store 85
+  push -660478335
+  store 86
+  push -405537848
+  store 87
+  push 568446438
+  store 88
+  push -1019803690
+  store 89
+  push -187363961
+  store 90
+  push 1163531501
+  store 91
+  push -1444681467
+  store 92
+  push -51403784
+  store 93
+  push 1735328473
+  store 94
+  push -1926607734
+  store 95
+  push -378558
+  store 96
+  push -2022574463
+  store 97
+  push 1839030562
+  store 98
+  push -35309556
+  store 99
+  push -1530992060
+  store 100
+  push 1272893353
+  store 101
+  push -155497632
+  store 102
+  push -1094730640
+  store 103
+  push 681279174
+  store 104
+  push -358537222
+  store 105
+  push -722521979
+  store 106
+  push 76029189
+  store 107
+  push -640364487
+  store 108
+  push -421815835
+  store 109
+  push 530742520
+  store 110
+  push -995338651
+  store 111
+  push -198630844
+  store 112
+  push 1126891415
+  store 113
+  push -1416354905
+  store 114
+  push -57434055
+  store 115
+  push 1700485571
+  store 116
+  push -1894986606
+  store 117
+  push -1051523
+  store 118
+  push -2054922799
+  store 119
+  push 1873313359
+  store 120
+  push -30611744
+  store 121
+  push -1560198380
+  store 122
+  push 1309151649
+  store 123
+  push -145523070
+  store 124
+  push -1120210379
+  store 125
+  push 718787259
+  store 126
+  push -343485551
+  store 127
+  push 7
+  store 128
+  push 12
+  store 129
+  push 17
+  store 130
+  push 22
+  store 131
+  push 7
+  store 132
+  push 12
+  store 133
+  push 17
+  store 134
+  push 22
+  store 135
+  push 7
+  store 136
+  push 12
+  store 137
+  push 17
+  store 138
+  push 22
+  store 139
+  push 7
+  store 140
+  push 12
+  store 141
+  push 17
+  store 142
+  push 22
+  store 143
+  push 5
+  store 144
+  push 9
+  store 145
+  push 14
+  store 146
+  push 20
+  store 147
+  push 5
+  store 148
+  push 9
+  store 149
+  push 14
+  store 150
+  push 20
+  store 151
+  push 5
+  store 152
+  push 9
+  store 153
+  push 14
+  store 154
+  push 20
+  store 155
+  push 5
+  store 156
+  push 9
+  store 157
+  push 14
+  store 158
+  push 20
+  store 159
+  push 4
+  store 160
+  push 11
+  store 161
+  push 16
+  store 162
+  push 23
+  store 163
+  push 4
+  store 164
+  push 11
+  store 165
+  push 16
+  store 166
+  push 23
+  store 167
+  push 4
+  store 168
+  push 11
+  store 169
+  push 16
+  store 170
+  push 23
+  store 171
+  push 4
+  store 172
+  push 11
+  store 173
+  push 16
+  store 174
+  push 23
+  store 175
+  push 6
+  store 176
+  push 10
+  store 177
+  push 15
+  store 178
+  push 21
+  store 179
+  push 6
+  store 180
+  push 10
+  store 181
+  push 15
+  store 182
+  push 21
+  store 183
+  push 6
+  store 184
+  push 10
+  store 185
+  push 15
+  store 186
+  push 21
+  store 187
+  push 6
+  store 188
+  push 10
+  store 189
+  push 15
+  store 190
+  push 21
+  store 191
+  ret
+
