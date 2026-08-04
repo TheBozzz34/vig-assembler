@@ -42,7 +42,14 @@ pub fn build(b: *std.Build) void {
     // A test executable collects the `test` blocks from its own root file only.
     // Therefore each source file that has tests needs an entry here. With
     // `main.zig` as the only root, the build ran no test and gave no message.
-    const test_roots = [_][]const u8{ "src/main.zig", "src/assembler.zig" };
+    const test_roots = [_][]const u8{
+        "src/main.zig",
+        "src/assembler.zig",
+        // This root embeds OPCODES.md and checks it against the shared instruction
+        // table. `@embedFile` makes the file an input of the build, so the check
+        // runs again when the documentation changes.
+        "src/opcodes_doc_tests.zig",
+    };
 
     const test_step = b.step("test", "Run unit tests");
     for (test_roots) |root| {
