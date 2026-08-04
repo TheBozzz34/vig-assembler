@@ -1,8 +1,8 @@
 # VIG Assembler
 
 `vigasm` assembles readable VIG source files into the bytecode consumed by the
-[`vig`](../vig-vm) virtual machine. It has no runtime dependency on the VM implementation. Both depend on
-[vig-bytecode](../vig-bytecode), which defines the instruction set, the container
+[`vig`](https://github.com/TheBozzz34/vig) virtual machine. It has no runtime dependency on the VM implementation. Both depend on
+[vig-bytecode](https://github.com/TheBozzz34/vig-bytecode), which defines the instruction set, the container
 format, and the verifier.
 
 See [OPCODES.md](OPCODES.md) for the complete current instruction reference.
