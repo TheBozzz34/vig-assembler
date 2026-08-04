@@ -1,10 +1,9 @@
 # VIG Assembler
 
 `vigasm` assembles readable VIG source files into the bytecode consumed by the
-[`vig`](../vig-vm) virtual machine. It is intentionally a separate Zig project,
-with no runtime dependency on the VM implementation. Both depend on
+[`vig`](../vig-vm) virtual machine. It has no runtime dependency on the VM implementation. Both depend on
 [vig-bytecode](../vig-bytecode), which defines the instruction set, the container
-format, and the verifier they have to agree on.
+format, and the verifier.
 
 See [OPCODES.md](OPCODES.md) for the complete current instruction reference.
 
@@ -65,7 +64,7 @@ places a NUL-terminated string in the program's static-data region, and `entry`
 names the label execution starts at. Strings are assembled into a region of their
 own, after the code, so they can be declared anywhere and are never executed.
 
-Assembly fails if the resulting program does not verify — for example if a jump
+Assembly fails if the resulting program does not verify, for example if a jump
 lands inside another instruction, or if control can run off the end of the code
 instead of reaching `halt` or `ret`. The failure names the code offset. See
 [OPCODES.md](OPCODES.md#verification).

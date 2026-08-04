@@ -73,7 +73,7 @@ immediately after the code. A label's address is therefore its offset in
 whichever region it belongs to, plus the code length for data labels.
 
 Only the code region is executable. Execution stops at its end, and jump and call
-targets must point inside it — a jump to a string address is rejected before the
+targets must point inside it, a jump to a string address is rejected before the
 program runs.
 
 Because the regions are separate, a program's entry point does not have to be its
