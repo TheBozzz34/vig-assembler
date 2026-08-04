@@ -41,6 +41,42 @@ VM share.
 | 25 | `print_string` | — | `address → address` | Print the NUL-terminated string at a VIG bytecode address. |
 | 26 | `load_at` | — | `address → data[address]` | Push a value from the data segment, using an address taken from the stack. |
 | 27 | `store_at` | — | `value address →` | Pop a value into the data segment, using an address taken from the stack. |
+| 28 | `and` | — | `a b → a & b` | Compute the bitwise AND of two values. |
+| 29 | `or` | — | `a b → a \| b` | Compute the bitwise OR of two values. |
+| 30 | `xor` | — | `a b → a ^ b` | Compute the bitwise XOR of two values. |
+| 31 | `not` | — | `a → ~a` | Invert every bit of a value. |
+| 32 | `shl` | — | `a b → a << (b mod 32)` | Shift left by the low five bits of the shift count. |
+| 33 | `shr_u` | — | `a b → unsigned(a) >> (b mod 32)` | Shift right logically by the low five bits of the shift count. |
+| 34 | `rotl` | — | `a b → rotate_left(a, b mod 32)` | Rotate left by the low five bits of the rotation count. |
+| 35 | `add_wrap` | — | `a b → a +% b` | Add modulo 2^32 instead of trapping on overflow. |
+| 36 | `read_i32` | — | `→ value` | Read a signed decimal integer from the runtime input stream. |
+
+Bitwise instructions operate on the raw two's-complement representation of each
+`i32`. Shift and rotation counts use only their low five bits, so all counts are
+effectively reduced modulo 32. `shr_u` fills high bits with zero, while `shl`,
+`rotl`, and `add_wrap` retain the resulting 32-bit pattern on the signed stack.
+
+## Runtime input
+
+`read_i32` skips leading whitespace, reads an optional `+` or `-`, and then
+reads a decimal `i32`. It flushes program output before waiting, so a prompt
+printed immediately beforehand is visible during interactive use:
+
+```asm
+push prompt
+print_string
+pop
+read_i32
+print
+halt
+
+prompt:
+  asciiz "Enter a number:"
+```
+
+Input may come from the terminal, a pipe, or a redirected file. `read_i32`
+traps with `EndOfInput` when no value remains, `InvalidInput` for a malformed
+token, and `IntegerOverflow` when the value is outside the signed 32-bit range.
 
 ## Indirect data access
 
@@ -171,7 +207,7 @@ Unreachable bytes in the code region are not an error; they are never executed.
   stack.
 - A jump or call target must point inside the code region.
 - Arithmetic traps on signed overflow. `div` and `mod` also trap on division by
-  zero.
+  zero. `read_i32` also uses `IntegerOverflow` for an out-of-range input value.
 - At most 16 foreign imports and four arguments per import are supported.
 
 ## Example

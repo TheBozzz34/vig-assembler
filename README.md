@@ -25,6 +25,14 @@ The example prints `42` and exercises the latest VIG instructions: `load`,
 `examples\print_string.vigas` demonstrates `asciiz` data and the built-in
 `print_string` instruction.
 
+`examples\read_i32.vigas` reads a signed decimal integer at runtime, doubles
+it, and prints the result:
+
+```powershell
+zig build run -- examples\read_i32.vigas -o read_i32.vig
+"21" | ..\vig\zig-out\bin\vig.exe read_i32.vig
+```
+
 ## Foreign-call integration suite
 
 On Windows, assemble and run the non-interactive foreign-call suite with:

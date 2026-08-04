@@ -347,6 +347,23 @@ test "assembles labels and the newest VIG opcodes" {
     try expectRegions(source, &expected, "");
 }
 
+test "assembles the newest operand-free opcodes" {
+    const source =
+        \\and
+        \\or
+        \\xor
+        \\not
+        \\shl
+        \\shr_u
+        \\rotl
+        \\add_wrap
+        \\read_i32
+        \\halt
+    ;
+
+    try expectRegions(source, &[_]u8{ 28, 29, 30, 31, 32, 33, 34, 35, 36, 0 }, "");
+}
+
 test "static data is assembled after the code, not inside it" {
     // The source declares `greeting` before `halt`, but the assembler puts it in
     // the data region. Therefore its address is past the end of the code, and the

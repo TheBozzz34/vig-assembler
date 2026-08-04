@@ -1,0 +1,12 @@
+push prompt
+print_string
+pop
+
+read_i32
+push 2
+mul
+print
+halt
+
+prompt:
+  asciiz "Enter a number to double:"
