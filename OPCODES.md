@@ -52,6 +52,7 @@ VM share.
 | 36 | `read_i32` | — | `→ value` | Read a signed decimal integer from the runtime input stream. |
 | 37 | `read_byte` | — | `→ byte` | Read one raw input byte, or push `-1` at end of input. |
 | 38 | `print_hex` | — | `a → a` | Print the top value as eight lowercase hexadecimal digits. |
+| 39 | `write_byte` | — | `byte →` | Pop one value and write its low byte to the output stream. |
 
 Bitwise instructions operate on the raw two's-complement representation of each
 `i32`. Shift and rotation counts use only their low five bits, so all counts are
