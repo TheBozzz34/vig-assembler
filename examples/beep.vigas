@@ -1,0 +1,83 @@
+extern Beep kernel32.dll Beep u32 u32
+
+entry main
+
+play_note:
+    foreign_call Beep
+    pop
+    ret
+
+message:
+  asciiz "Playing Beethoven's Ode to Joy!"
+
+main:
+    push message
+    print_string
+
+    pop
+
+    # E4 E4 F4 G4
+    push 330
+    push 300
+    call play_note
+
+    push 330
+    push 300
+    call play_note
+
+    push 349
+    push 300
+    call play_note
+
+    push 392
+    push 300
+    call play_note
+
+    # G4 F4 E4 D4
+    push 392
+    push 300
+    call play_note
+
+    push 349
+    push 300
+    call play_note
+
+    push 330
+    push 300
+    call play_note
+
+    push 294
+    push 300
+    call play_note
+
+    # C4 C4 D4 E4
+    push 262
+    push 300
+    call play_note
+
+    push 262
+    push 300
+    call play_note
+
+    push 294
+    push 300
+    call play_note
+
+    push 330
+    push 300
+    call play_note
+
+    # E4 D4 D4
+    push 330
+    push 450
+    call play_note
+
+    push 294
+    push 150
+    call play_note
+
+    push 294
+    push 600
+    call play_note
+
+    halt
