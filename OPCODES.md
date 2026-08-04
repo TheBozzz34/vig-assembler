@@ -50,6 +50,8 @@ VM share.
 | 34 | `rotl` | — | `a b → rotate_left(a, b mod 32)` | Rotate left by the low five bits of the rotation count. |
 | 35 | `add_wrap` | — | `a b → a +% b` | Add modulo 2^32 instead of trapping on overflow. |
 | 36 | `read_i32` | — | `→ value` | Read a signed decimal integer from the runtime input stream. |
+| 37 | `read_byte` | — | `→ byte` | Read one raw input byte, or push `-1` at end of input. |
+| 38 | `print_hex` | — | `a → a` | Print the top value as eight lowercase hexadecimal digits. |
 
 Bitwise instructions operate on the raw two's-complement representation of each
 `i32`. Shift and rotation counts use only their low five bits, so all counts are
@@ -77,6 +79,31 @@ prompt:
 Input may come from the terminal, a pipe, or a redirected file. `read_i32`
 traps with `EndOfInput` when no value remains, `InvalidInput` for a malformed
 token, and `IntegerOverflow` when the value is outside the signed 32-bit range.
+
+`read_byte` reads input without treating whitespace specially. It pushes a value
+from `0` through `255`, or `-1` at end of input. Because EOF is a value rather
+than a trap, byte-oriented programs can process streams of unknown length:
+
+```asm
+loop:
+  read_byte
+  dup
+  push -1
+  eq
+  jmp_not_zero done
+  # Process the byte left on the stack.
+  pop
+  jmp loop
+
+done:
+  pop
+  halt
+```
+
+`print_hex` interprets the top `i32` as its raw 32-bit pattern and prints exactly
+eight lowercase hexadecimal digits followed by a newline. Like `print`, it does
+not remove the value. For example, `push -1` followed by `print_hex` prints
+`ffffffff`.
 
 ## Indirect data access
 
