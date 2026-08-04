@@ -312,10 +312,19 @@ fn verifyProgram(
 }
 
 fn meaningfulLine(raw_line: []const u8) []const u8 {
-    const uncommented = if (std.mem.indexOfAny(u8, raw_line, ";#")) |comment_start|
-        raw_line[0..comment_start]
-    else
-        raw_line;
+    // Semicolons and hashes introduce comments, except inside an `asciiz`
+    // literal where they are ordinary string bytes.
+    var in_string = false;
+    var comment_start = raw_line.len;
+    for (raw_line, 0..) |byte, index| {
+        if (byte == '"') {
+            in_string = !in_string;
+        } else if (!in_string and (byte == ';' or byte == '#')) {
+            comment_start = index;
+            break;
+        }
+    }
+    const uncommented = raw_line[0..comment_start];
     return std.mem.trim(u8, uncommented, " \t\r");
 }
 
@@ -509,6 +518,18 @@ test "several strings keep their declaration order in the data region" {
     ;
     // "a\0" uses data offsets 0 and 1. Therefore `second` is at `code_len` + 2.
     try expectRegions(source, &[_]u8{ 1, 9, 0, 0, 0, 25, 0 }, "a\x00bc\x00");
+}
+
+test "asciiz strings may contain comment markers" {
+    const source =
+        \\  push message
+        \\  print_string
+        \\  halt
+        \\message:
+        \\  asciiz "use # and ; literally" # trailing comment
+    ;
+
+    try expectRegions(source, &[_]u8{ 1, 7, 0, 0, 0, 25, 0 }, "use # and ; literally\x00");
 }
 
 test "assembles a foreign-import container and call" {
