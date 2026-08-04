@@ -32,6 +32,9 @@ fn operandPlaceholder(kind: OperandKind) []const u8 {
         .data_address => "address",
         .code_target => "target",
         .import_index => "name",
+        .local_index => "index",
+        // `enter` is the one instruction with two operands.
+        .frame_shape => "arguments locals",
     };
 }
 
@@ -42,6 +45,8 @@ fn operandDescription(kind: OperandKind) []const u8 {
         .signed => "signed `i32`",
         .data_address, .code_target => "unsigned `u32`",
         .import_index => "unsigned `u8` import index",
+        .local_index => "unsigned `u16` frame slot",
+        .frame_shape => "two unsigned `u16`",
     };
 }
 

@@ -206,6 +206,18 @@ fn parseOperand(
     }
 
     const text = tokens.next() orelse return error.MissingOperand;
+
+    // `enter` is the one instruction with two operands: the arguments of the function
+    // and then its locals.
+    if (kind == .frame_shape) {
+        const locals_text = tokens.next() orelse return error.MissingOperand;
+        if (tokens.next() != null) return error.UnexpectedOperand;
+        return .{ .frame_shape = .{
+            .arguments = try std.fmt.parseInt(u16, text, 0),
+            .locals = try std.fmt.parseInt(u16, locals_text, 0),
+        } };
+    }
+
     if (tokens.next() != null) return error.UnexpectedOperand;
 
     // An import is named and never calculated, so it does not go through the
@@ -213,10 +225,14 @@ fn parseOperand(
     if (kind == .import_index) {
         return .{ .import_index = scope.imports_by_name.get(text) orelse return error.UnknownForeignImport };
     }
+    // A frame slot is an index and never an address, so no label can name one.
+    if (kind == .local_index) {
+        return .{ .local_index = try std.fmt.parseInt(u16, text, 0) };
+    }
 
     const value = try resolveAddress(text, scope, kind.acceptsLabel());
     return switch (kind) {
-        .none, .import_index => unreachable,
+        .none, .import_index, .local_index, .frame_shape => unreachable,
         .signed => .{ .signed = std.math.cast(i32, value) orelse return error.AddressOutOfRange },
         .code_target => .{ .code_target = std.math.cast(u32, value) orelse return error.AddressOutOfRange },
         .data_address => .{ .data_address = std.math.cast(u32, value) orelse return error.AddressOutOfRange },
@@ -372,12 +388,15 @@ fn parseInstruction(line: []const u8) !OpCode {
     var tokens = std.mem.tokenizeAny(u8, line, " \t,");
     const instruction = try opCodeFor(tokens.next() orelse return error.InvalidSyntax);
 
-    if (instruction.operandKind() == .none) {
-        if (tokens.next() != null) return error.UnexpectedOperand;
-    } else {
-        _ = tokens.next() orelse return error.MissingOperand;
-        if (tokens.next() != null) return error.UnexpectedOperand;
-    }
+    // `enter` takes two operands. Every other instruction takes one or none.
+    const operands: usize = switch (instruction.operandKind()) {
+        .none => 0,
+        .frame_shape => 2,
+        else => 1,
+    };
+    for (0..operands) |_| _ = tokens.next() orelse return error.MissingOperand;
+    if (tokens.next() != null) return error.UnexpectedOperand;
+
     return instruction;
 }
 

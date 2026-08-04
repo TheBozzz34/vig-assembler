@@ -61,6 +61,11 @@ VM share.
 | 45 | `store8` | — | `value address →` | Write the low 8 bits of `value` to `address`. |
 | 46 | `store16` | — | `value address →` | Write the low 16 bits of `value` to `address`. |
 | 47 | `store32` | — | `value address →` | Write all 32 bits of `value` to `address`. |
+| 48 | `enter arguments locals` | two unsigned `u16` | `arg1 ... argN →` | Give the running function a frame and move its arguments into it. |
+| 49 | `ret_val` | — | `value → value` | Return one value to the caller and discard the rest of the frame. |
+| 50 | `load_local index` | unsigned `u16` frame slot | `→ frame[index]` | Push an argument or a local of the running function. |
+| 51 | `store_local index` | unsigned `u16` frame slot | `value →` | Pop a value into an argument or a local of the running function. |
+| 52 | `local_addr index` | unsigned `u16` frame slot | `→ address` | Push the memory address of an argument or a local. |
 
 Bitwise instructions operate on the raw two's-complement representation of each
 `i32`. Shift and rotation counts use only their low five bits, so all counts are
@@ -208,6 +213,70 @@ value has to fill it somehow. `load8_u` puts zeros in the upper 24 bits and
 `load8_s` copies the sign bit into them, which is the difference between
 `unsigned char` and `signed char`. A store needs no such pair: it keeps the low
 bits and does not ask what they mean.
+
+## Call frames
+
+`call` and `ret` on their own give a subroutine a return address and nothing else. A
+function that needs storage asks for it with `enter`:
+
+```asm
+entry start
+start:
+    push 6
+    call square       # the argument goes on the operand stack
+    print
+    halt
+
+square:
+    enter 1 0         # one argument, no locals
+    load_local 0
+    load_local 0
+    mul
+    ret_val           # → 36
+```
+
+`enter arguments locals` takes the arguments off the operand stack and puts them in
+the frame, so slot 0 is the first argument and the locals follow. Therefore an
+argument and a local are the same kind of thing while the function runs, and
+`local_addr` gives the address of either:
+
+```asm
+sum_pair:
+    enter 2 1
+    load_local 0
+    load_local 1
+    add
+    store_local 2     # a local
+    local_addr 2      # the address of that local, an ordinary pointer
+    load32
+    ret_val
+```
+
+A local starts at zero. A frame lives in guest memory, so the address of a local is
+an ordinary address that `load32`, `store8` or a `cstr` foreign argument can use.
+That is what makes a C parameter an lvalue.
+
+Frame memory grows down from the end of memory while the program image sits at the
+start. A recursion with no end therefore fails with `FrameMemoryExhausted` when the
+two meet, or with `CallStackOverflow` when the number of active calls reaches
+`call_stack_size`, whichever comes first.
+
+### Two rules worth knowing
+
+**A frame belongs to a call.** `enter` outside a call fails with
+`EnterOutsideCall`, so a function that has locals is reached with `call` and the
+entry point of the program is a stub that calls it. A C runtime does the same thing
+with `main`.
+
+**`ret` returns the operand stack to the height it had before the call**, less the
+arguments that `enter` took. A function that leaves values behind therefore cannot
+corrupt its caller. This applies only to a function that called `enter`: without a
+declared argument count the VM does not know how many values the function consumed,
+and putting them back would be worse than leaving the stack alone. A function with
+no frame keeps its own stack in order, as every VIG program did before frames
+existed.
+
+Use `ret_val` to return a value and `ret` to return none.
 
 ## Program layout
 
