@@ -11,8 +11,16 @@ pub fn main(init: std.process.Init) !void {
     const source = try std.Io.Dir.cwd().readFileAlloc(init.io, args[1], init.gpa, .limited(1024 * 1024));
     defer init.gpa.free(source);
 
-    const program = assembler.assemble(init.gpa, source) catch |err| {
-        std.debug.print("Assembly failed: {s}\n", .{@errorName(err)});
+    var diagnostics: assembler.Diagnostics = .{};
+    const program = assembler.assemble(init.gpa, source, &diagnostics) catch |err| {
+        if (diagnostics.verification) |failure| {
+            std.debug.print(
+                "Verification failed at code offset {d}: {s}\n",
+                .{ failure.offset, @errorName(failure.reason) },
+            );
+        } else {
+            std.debug.print("Assembly failed: {s}\n", .{@errorName(err)});
+        }
         return err;
     };
     defer init.gpa.free(program);

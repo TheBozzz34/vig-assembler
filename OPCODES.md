@@ -4,6 +4,10 @@ VIG programs are bytecode. Every instruction begins with a one-byte opcode.
 Multi-byte operands are four-byte little-endian values. In assembler source,
 labels used by jumps and calls resolve to absolute byte addresses.
 
+The instruction set, the operand widths, and the container the assembler writes
+are defined once in [vig-bytecode](../vig-bytecode), which the assembler and the
+VM share.
+
 `a` is the lower stack value and `b` is the top value. Stack effects use
 `before → after`; `—` means the instruction does not change the data stack.
 
@@ -26,7 +30,7 @@ labels used by jumps and calls resolve to absolute byte addresses.
 | 14 | `lte` | — | `a b → bool` | Push `1` when `a <= b`, otherwise `0`. |
 | 15 | `gt` | — | `a b → bool` | Push `1` when `a > b`, otherwise `0`. |
 | 16 | `gte` | — | `a b → bool` | Push `1` when `a >= b`, otherwise `0`. |
-| 17 | `jmp target` | unsigned `u32` | — | Jump unconditionally to an absolute byte address. |
+| 17 | `jmp target` | unsigned `u32` | — | Jump unconditionally to an absolute code offset. |
 | 18 | `jmp_zero target` | unsigned `u32` | `condition →` | Jump when `condition` is `0`. |
 | 19 | `jmp_not_zero target` | unsigned `u32` | `condition →` | Jump when `condition` is not `0`. |
 | 20 | `load address` | unsigned `u32` | `→ data[address]` | Push a value from the data segment. |
@@ -61,11 +65,44 @@ Both instructions fault with `SegmentFault` on a negative address or one at or
 beyond the end of the data segment. `examples\array_sum.vigas` fills and then
 sums a ten-element array with computed addresses.
 
+## Program layout
+
+An assembled program has two regions: the code and the static data. Instructions
+go in the first, `asciiz` strings in the second, and the VM maps the data
+immediately after the code. A label's address is therefore its offset in
+whichever region it belongs to, plus the code length for data labels.
+
+Only the code region is executable. Execution stops at its end, and jump and call
+targets must point inside it — a jump to a string address is rejected before the
+program runs.
+
+Because the regions are separate, a program's entry point does not have to be its
+first instruction. `entry` names the label to start at, which is what lets
+subroutines be written above the code that calls them:
+
+```asm
+entry main
+
+double:
+  push 2
+  mul
+  ret
+
+main:
+  push 21
+  call double
+  print
+  halt
+```
+
+Without an `entry` directive execution starts at offset `0`.
+
 ## Strings
 
-Use `asciiz` to place a NUL-terminated string in the program, then push its
-label and call `print_string`. Keep static data after `halt` so it is not
-executed as bytecode.
+Use `asciiz` to place a NUL-terminated string in the program, then push its label
+and call `print_string`. Strings are collected into the static-data region in
+declaration order, wherever they appear in the source, so they cannot be executed
+and need not be written after `halt`.
 
 ```asm
 push greeting
@@ -107,20 +144,32 @@ The syntax is `extern local_name dll_name symbol_name [argument_type ...]`.
 Imports have zero to four arguments. Types are `i32`, `u32`, `ptr`, and `cstr`.
 Arguments are pushed left-to-right and the return value is a 32-bit integer.
 
-`ptr` and `cstr` are VIG bytecode offsets, never native addresses. `0` becomes
-`NULL`; `cstr` additionally requires a NUL-terminated byte string. Define one
-with `asciiz "text"` after `halt` so execution never reaches it. This first
-version supports Windows x64 integer/pointer functions only; not callbacks,
-structs, floating point, output buffers, or 64-bit return values.
+`ptr` and `cstr` are offsets into the loaded program, never native addresses. `0`
+becomes `NULL`; `cstr` additionally requires a NUL-terminated byte string, which
+is what `asciiz` produces. This first version supports Windows x64
+integer/pointer functions only; not callbacks, structs, floating point, output
+buffers, or 64-bit return values.
+
+## Verification
+
+The assembler verifies every program it writes, and the VM verifies every program
+it loads. Verification walks the code from the entry point, following each branch,
+and rejects a program in which any reachable instruction fails to decode, a jump
+or call lands inside another instruction or outside the code, control falls off the
+end of the code, or a `foreign_call` names an import that was never declared. Both
+report the code offset that failed.
+
+Unreachable bytes in the code region are not an error; they are never executed.
 
 ## Limits and errors
 
 - The data segment contains 256 signed 32-bit slots, so valid data addresses
   are `0` through `255`. This applies to `load_at` and `store_at` too, which
-  additionally reject negative addresses rather than wrapping them.
+  additionally reject negative addresses rather than wrapping them. The VM
+  rejects an out-of-range `load` or `store` address at load time.
 - The data stack has 256 slots. `call` and `ret` use a separate 128-entry call
   stack.
-- A jump or call target must point inside the loaded program.
+- A jump or call target must point inside the code region.
 - Arithmetic traps on signed overflow. `div` and `mod` also trap on division by
   zero.
 - At most 16 foreign imports and four arguments per import are supported.

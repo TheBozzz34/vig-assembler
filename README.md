@@ -1,8 +1,10 @@
 # VIG Assembler
 
 `vigasm` assembles readable VIG source files into the bytecode consumed by the
-[`vig`](../vig) virtual machine. It is intentionally a separate Zig project,
-with no runtime dependency on the VM implementation.
+[`vig`](../vig-vm) virtual machine. It is intentionally a separate Zig project,
+with no runtime dependency on the VM implementation. Both depend on
+[vig-bytecode](../vig-bytecode), which defines the instruction set, the container
+format, and the verifier they have to agree on.
 
 See [OPCODES.md](OPCODES.md) for the complete current instruction reference.
 
@@ -40,8 +42,8 @@ UI or writing files.
 
 ## Source format
 
-One instruction or label appears on each line. Labels end in `:` and resolve to
-the byte address of the following instruction. `#` and `;` begin comments.
+One instruction, label, or directive appears on each line. Labels end in `:` and
+resolve to the address of whatever follows them. `#` and `;` begin comments.
 
 ```asm
 loop:
@@ -56,7 +58,17 @@ loop:
 
 `push` accepts a signed 32-bit decimal/base-prefixed value or a label address.
 `load` and `store` take unsigned 32-bit data addresses. `jmp`, `jmp_zero`,
-`jmp_not_zero`, and `call` accept either a label or an explicit byte address.
+`jmp_not_zero`, and `call` accept either a label or an explicit code offset.
+
+Three directives are available: `extern` declares a foreign import, `asciiz`
+places a NUL-terminated string in the program's static-data region, and `entry`
+names the label execution starts at. Strings are assembled into a region of their
+own, after the code, so they can be declared anywhere and are never executed.
+
+Assembly fails if the resulting program does not verify — for example if a jump
+lands inside another instruction, or if control can run off the end of the code
+instead of reaching `halt` or `ret`. The failure names the code offset. See
+[OPCODES.md](OPCODES.md#verification).
 
 `load_at` and `store_at` take no operand and read the data address from the stack
 instead, which is how arrays and computed offsets are written. See
