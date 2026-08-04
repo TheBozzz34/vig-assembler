@@ -1,0 +1,43 @@
+; Print bytes one by one
+
+entry main
+
+main:
+    push 72
+    write_byte
+
+    push 101
+    write_byte
+
+    push 108 
+    write_byte
+
+    push 108
+    write_byte
+
+    push 111
+    write_byte
+
+    push 32
+    write_byte
+
+    push 87
+    write_byte
+
+    push 111
+    write_byte
+
+    push 114
+    write_byte
+
+    push 108 
+    write_byte
+
+    push 100
+    write_byte
+
+    push 10
+    write_byte
+
+
+    halt

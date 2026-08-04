@@ -1,0 +1,10 @@
+; Simple xor 
+
+entry main
+
+main:
+    push 0
+    push 1
+    xor
+    print_hex
+    halt
