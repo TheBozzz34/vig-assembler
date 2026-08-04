@@ -61,6 +61,16 @@ pub fn build(b: *std.Build) void {
                 .imports = &.{.{ .name = "vig_bytecode", .module = bytecode }},
             }),
         });
+
+        // `@embedFile` reads a path inside the directory of the root module, and
+        // OPCODES.md is above `src`. An anonymous import gives the file a name
+        // that the test can embed, and makes it an input of the build.
+        if (std.mem.eql(u8, root, "src/opcodes_doc_tests.zig")) {
+            tests.root_module.addAnonymousImport("opcodes_md", .{
+                .root_source_file = b.path("OPCODES.md"),
+            });
+        }
+
         test_step.dependOn(&b.addRunArtifact(tests).step);
     }
 }

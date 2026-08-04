@@ -19,7 +19,9 @@ const bytecode = @import("vig_bytecode");
 const OpCode = bytecode.OpCode;
 const OperandKind = bytecode.OperandKind;
 
-const opcodes_md = @embedFile("../OPCODES.md");
+// OPCODES.md is above `src`, which `@embedFile` cannot reach by a relative path.
+// `build.zig` gives the file this name with `addAnonymousImport`.
+const opcodes_md = @embedFile("opcodes_md");
 
 /// The name that the documentation gives to the operand of an instruction, as it
 /// appears after the mnemonic in the Assembly column.
@@ -43,6 +45,15 @@ fn operandDescription(kind: OperandKind) []const u8 {
     };
 }
 
+/// A bar inside a table cell is written `\|`, because an unescaped one would end
+/// the cell. The stack effect of `or` is `a b → a | b`, so it needs this.
+fn escapeBars(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
+    const size = std.mem.replacementSize(u8, text, "|", "\\|");
+    const result = try allocator.alloc(u8, size);
+    _ = std.mem.replace(u8, text, "|", "\\|", result);
+    return result;
+}
+
 /// The row that OPCODES.md must hold for one instruction. The Description column
 /// is the text that the file already has, because this check does not own it.
 fn expectedRow(
@@ -62,8 +73,11 @@ fn expectedRow(
 
     const effect = if (info.stack_effect.len == 0)
         try allocator.dupe(u8, "—")
-    else
-        try std.fmt.allocPrint(allocator, "`{s}`", .{info.stack_effect});
+    else effect: {
+        const escaped = try escapeBars(allocator, info.stack_effect);
+        defer allocator.free(escaped);
+        break :effect try std.fmt.allocPrint(allocator, "`{s}`", .{escaped});
+    };
     defer allocator.free(effect);
 
     return std.fmt.allocPrint(allocator, "| {d} | {s} | {s} | {s} | {s} |", .{
@@ -73,6 +87,32 @@ fn expectedRow(
         effect,
         description,
     });
+}
+
+/// The five cells of a table row.
+///
+/// A split on every bar is wrong, because a cell can hold `\|`. This walks the row
+/// and steps over an escaped character rather than treating it as a separator.
+fn rowCells(row: []const u8, cells: *[5][]const u8) !void {
+    if (!std.mem.startsWith(u8, row, "|")) return error.MalformedRow;
+
+    var found: usize = 0;
+    var start: usize = 1;
+    var position: usize = 1;
+    while (position < row.len) {
+        switch (row[position]) {
+            '\\' => position += 2,
+            '|' => {
+                if (found == cells.len) return error.MalformedRow;
+                cells[found] = std.mem.trim(u8, row[start..position], " ");
+                found += 1;
+                position += 1;
+                start = position;
+            },
+            else => position += 1,
+        }
+    }
+    if (found != cells.len) return error.MalformedRow;
 }
 
 /// The rows of the instruction table in OPCODES.md, in the order that the file has
@@ -99,15 +139,12 @@ fn documentedRows(allocator: std.mem.Allocator) ![][]const u8 {
 }
 
 /// The Description column of a row, so a comparison can keep the text that the
-/// file already has.
+/// file already has. A row is
+/// `| byte | assembly | operand | effect | description |`.
 fn descriptionOf(row: []const u8) ?[]const u8 {
-    // A row is `| byte | assembly | operand | effect | description |`. The
-    // description is the fifth of the five cells.
-    var cells = std.mem.splitScalar(u8, row, '|');
-    _ = cells.next(); // the empty text before the first bar
-    for (0..3) |_| _ = cells.next() orelse return null;
-    const description = cells.next() orelse return null;
-    return std.mem.trim(u8, description, " ");
+    var cells: [5][]const u8 = undefined;
+    rowCells(row, &cells) catch return null;
+    return cells[4];
 }
 
 test "OPCODES.md documents every instruction, in order, with its operand and effect" {
@@ -158,10 +195,9 @@ test "the documented table covers each mnemonic exactly one time" {
         for (rows) |row| {
             // The mnemonic is inside backticks in the Assembly column, and it is
             // either the whole cell or the part before the operand name.
-            var cells = std.mem.splitScalar(u8, row, '|');
-            _ = cells.next();
-            _ = cells.next() orelse continue;
-            const assembly = std.mem.trim(u8, cells.next() orelse continue, " `");
+            var cells: [5][]const u8 = undefined;
+            rowCells(row, &cells) catch continue;
+            const assembly = std.mem.trim(u8, cells[1], "`");
             var words = std.mem.splitScalar(u8, assembly, ' ');
             if (std.mem.eql(u8, words.next() orelse continue, info.mnemonic)) found += 1;
         }
