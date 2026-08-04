@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const max_foreign_args = 4;
+const max_foreign_imports = 16;
 
 const Operand = enum { none, i32_value, value_or_target, u32_address, target, foreign_import };
 
@@ -54,7 +55,7 @@ pub fn assemble(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
         if (isDirective(line, "extern")) {
             const foreign_import = try parseExtern(line);
             if (imports_by_name.contains(foreign_import.name)) return error.DuplicateForeignImport;
-            if (imports.items.len >= 256) return error.TooManyForeignImports;
+            if (imports.items.len >= max_foreign_imports) return error.TooManyForeignImports;
             try imports_by_name.put(foreign_import.name, @intCast(imports.items.len));
             try imports.append(allocator, foreign_import.value);
             continue;
@@ -301,6 +302,33 @@ test "assembles a foreign-import container and call" {
     const output = try assemble(std.testing.allocator, source);
     defer std.testing.allocator.free(output);
     try std.testing.expectEqualSlices(u8, expected, output);
+}
+
+test "rejects more foreign imports than the VM can load" {
+    const source =
+        \\extern f0 k.dll s
+        \\extern f1 k.dll s
+        \\extern f2 k.dll s
+        \\extern f3 k.dll s
+        \\extern f4 k.dll s
+        \\extern f5 k.dll s
+        \\extern f6 k.dll s
+        \\extern f7 k.dll s
+        \\extern f8 k.dll s
+        \\extern f9 k.dll s
+        \\extern f10 k.dll s
+        \\extern f11 k.dll s
+        \\extern f12 k.dll s
+        \\extern f13 k.dll s
+        \\extern f14 k.dll s
+        \\extern f15 k.dll s
+        \\extern f16 k.dll s
+        \\halt
+    ;
+    try std.testing.expectError(
+        error.TooManyForeignImports,
+        assemble(std.testing.allocator, source),
+    );
 }
 
 test "push accepts signed literals and label addresses" {
