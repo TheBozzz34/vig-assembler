@@ -20,13 +20,13 @@ main:
 
   # Initial MD5 state.
   push 1732584193
-  store 20
+  store globals+80
   push -271733879
-  store 21
+  store globals+84
   push -1732584194
-  store 22
+  store globals+88
   push 271733878
-  store 23
+  store globals+92
 
 read_loop:
   read_byte
@@ -40,19 +40,19 @@ read_loop:
 
   # Increment the 64-bit byte count. Since the low word is incremented by one,
   # a result of zero is exactly the unsigned carry condition.
-  load 25
+  load globals+100
   push 1
   add_wrap
   dup
-  store 25
+  store globals+100
   jmp_not_zero length_done
-  load 26
+  load globals+104
   push 1
   add_wrap
-  store 26
+  store globals+104
 
 length_done:
-  load 24
+  load globals+96
   push 64
   eq
   jmp_zero read_loop
@@ -60,7 +60,7 @@ length_done:
   call compress
   call clear_block
   push 0
-  store 24
+  store globals+96
   jmp read_loop
 
 finish_input:
@@ -72,7 +72,7 @@ finish_input:
 
   # The final eight bytes hold the original length. If fewer than eight bytes
   # remain, finish this block and place the length in a new zero block.
-  load 24
+  load globals+96
   push 56
   gt
   jmp_zero write_length
@@ -80,82 +80,93 @@ finish_input:
   call compress
   call clear_block
   push 0
-  store 24
+  store globals+96
 
 write_length:
   # Convert the two-word byte count to a two-word bit count.
-  load 25
+  load globals+100
   push 3
   shl
-  store 14
+  store globals+56
 
-  load 26
+  load globals+104
   push 3
   shl
-  load 25
+  load globals+100
   push 29
   shr_u
   or
-  store 15
+  store globals+60
 
   call compress
 
   # MD5 serializes each state word least-significant byte first. Byte-swap each
   # word before print_hex so the four output lines concatenate to the canonical
   # digest.
-  load 20
+  load globals+80
   call print_digest_word
-  load 21
+  load globals+84
   call print_digest_word
-  load 22
+  load globals+88
   call print_digest_word
-  load 23
+  load globals+92
   call print_digest_word
   halt
 
 # Consume one byte from the stack and append it to the current message block.
 put_byte:
-  store 28
+  store globals+112
 
-  load 24
+  # The word index of the current byte, then the address of that word. A former
+  # slot index is multiplied by four and added to the base, because guest memory is
+  # addressed by byte now.
+  load globals+96
   push 2
   shr_u
-  store 29
+  push 4
+  mul
+  push globals
+  add
+  store globals+116
 
-  load 29
+  load globals+116
   load_at
-  load 28
-  load 24
+  load globals+112
+  load globals+96
   push 3
   and
   push 3
   shl
   shl
   or
-  load 29
+  load globals+116
   store_at
 
-  load 24
+  load globals+96
   push 1
   add
-  store 24
+  store globals+96
   ret
 
 # Clear the sixteen words of the message block.
 clear_block:
   push 0
-  store 30
+  store globals+120
 
 clear_loop:
   push 0
-  load 30
+  load globals+120
+  push 4
+  mul
+  push globals
+  add
   store_at
 
-  load 30
+  load globals+120
   push 1
   add
   dup
-  store 30
+  store globals+120
   push 16
   ne
   jmp_not_zero clear_loop
@@ -163,191 +174,217 @@ clear_loop:
 
 # Process one 512-bit block.
 compress:
-  load 20
-  store 16
-  load 21
-  store 17
-  load 22
-  store 18
-  load 23
-  store 19
+  load globals+80
+  store globals+64
+  load globals+84
+  store globals+68
+  load globals+88
+  store globals+72
+  load globals+92
+  store globals+76
 
   push 0
-  store 30
+  store globals+120
 
 round_loop:
-  load 30
+  load globals+120
   push 16
   lt
   jmp_zero round_2
 
   # F = (b & c) | (~b & d), g = i
-  load 17
-  load 18
+  load globals+68
+  load globals+72
   and
-  load 17
+  load globals+68
   not
-  load 19
+  load globals+76
   and
   or
-  store 31
-  load 30
-  store 29
+  store globals+124
+  # g, then the address of the word of the block that g names.
+  load globals+120
+  push 4
+  mul
+  push globals
+  add
+  store globals+116
   jmp round_update
 
 round_2:
-  load 30
+  load globals+120
   push 32
   lt
   jmp_zero round_3
 
   # F = (d & b) | (~d & c), g = (5*i + 1) mod 16
-  load 19
-  load 17
+  load globals+76
+  load globals+68
   and
-  load 19
+  load globals+76
   not
-  load 18
+  load globals+72
   and
   or
-  store 31
-  load 30
+  store globals+124
+  # g, then the address of the word of the block that g names.
+  load globals+120
   push 5
   mul
   push 1
   add
   push 16
   mod
-  store 29
+  push 4
+  mul
+  push globals
+  add
+  store globals+116
   jmp round_update
 
 round_3:
-  load 30
+  load globals+120
   push 48
   lt
   jmp_zero round_4
 
   # F = b ^ c ^ d, g = (3*i + 5) mod 16
-  load 17
-  load 18
+  load globals+68
+  load globals+72
   xor
-  load 19
+  load globals+76
   xor
-  store 31
-  load 30
+  store globals+124
+  # g, then the address of the word of the block that g names.
+  load globals+120
   push 3
   mul
   push 5
   add
   push 16
   mod
-  store 29
+  push 4
+  mul
+  push globals
+  add
+  store globals+116
   jmp round_update
 
 round_4:
   # F = c ^ (b | ~d), g = (7*i) mod 16
-  load 18
-  load 17
-  load 19
+  load globals+72
+  load globals+68
+  load globals+76
   not
   or
   xor
-  store 31
-  load 30
+  store globals+124
+  # g, the word of the block that this round uses, then the address of that word.
+  load globals+120
   push 7
   mul
   push 16
   mod
-  store 29
+  push 4
+  mul
+  push globals
+  add
+  store globals+116
 
 round_update:
   # new_b = b + rotl(a + F + K[i] + M[g], s[i])
-  load 16
-  load 31
+  load globals+64
+  load globals+124
   add_wrap
 
-  load 30
-  push 64
+  # K[i]. The table was at slot 64, so it is at globals+256 now.
+  load globals+120
+  push 4
+  mul
+  push globals+256
   add
   load_at
   add_wrap
 
-  load 29
+  load globals+116
   load_at
   add_wrap
 
-  load 30
-  push 128
+  # s[i], the rotation count. The table was at slot 128, so it is at globals+512.
+  load globals+120
+  push 4
+  mul
+  push globals+512
   add
   load_at
   rotl
 
-  load 17
+  load globals+68
   add_wrap
-  store 32
+  store globals+128
 
   # Rotate the working registers: a=d, d=c, c=b, b=new_b.
-  load 19
-  store 16
-  load 18
-  store 19
-  load 17
-  store 18
-  load 32
-  store 17
+  load globals+76
+  store globals+64
+  load globals+72
+  store globals+76
+  load globals+68
+  store globals+72
+  load globals+128
+  store globals+68
 
-  load 30
+  load globals+120
   push 1
   add
   dup
-  store 30
+  store globals+120
   push 64
   ne
   jmp_not_zero round_loop
 
-  load 20
-  load 16
+  load globals+80
+  load globals+64
   add_wrap
-  store 20
-  load 21
-  load 17
+  store globals+80
+  load globals+84
+  load globals+68
   add_wrap
-  store 21
-  load 22
-  load 18
+  store globals+84
+  load globals+88
+  load globals+72
   add_wrap
-  store 22
-  load 23
-  load 19
+  store globals+88
+  load globals+92
+  load globals+76
   add_wrap
-  store 23
+  store globals+92
   ret
 
 # Print one state word in MD5 byte order.
 print_digest_word:
-  store 28
+  store globals+112
 
-  load 28
+  load globals+112
   push 255
   and
   push 24
   shl
 
-  load 28
+  load globals+112
   push 65280
   and
   push 8
   shl
   or
 
-  load 28
+  load globals+112
   push 8
   shr_u
   push 65280
   and
   or
 
-  load 28
+  load globals+112
   push 24
   shr_u
   or
@@ -359,260 +396,264 @@ print_digest_word:
 # Populate the standard MD5 K and rotation tables.
 init_tables:
   push -680876936
-  store 64
+  store globals+256
   push -389564586
-  store 65
+  store globals+260
   push 606105819
-  store 66
+  store globals+264
   push -1044525330
-  store 67
+  store globals+268
   push -176418897
-  store 68
+  store globals+272
   push 1200080426
-  store 69
+  store globals+276
   push -1473231341
-  store 70
+  store globals+280
   push -45705983
-  store 71
+  store globals+284
   push 1770035416
-  store 72
+  store globals+288
   push -1958414417
-  store 73
+  store globals+292
   push -42063
-  store 74
+  store globals+296
   push -1990404162
-  store 75
+  store globals+300
   push 1804603682
-  store 76
+  store globals+304
   push -40341101
-  store 77
+  store globals+308
   push -1502002290
-  store 78
+  store globals+312
   push 1236535329
-  store 79
+  store globals+316
   push -165796510
-  store 80
+  store globals+320
   push -1069501632
-  store 81
+  store globals+324
   push 643717713
-  store 82
+  store globals+328
   push -373897302
-  store 83
+  store globals+332
   push -701558691
-  store 84
+  store globals+336
   push 38016083
-  store 85
+  store globals+340
   push -660478335
-  store 86
+  store globals+344
   push -405537848
-  store 87
+  store globals+348
   push 568446438
-  store 88
+  store globals+352
   push -1019803690
-  store 89
+  store globals+356
   push -187363961
-  store 90
+  store globals+360
   push 1163531501
-  store 91
+  store globals+364
   push -1444681467
-  store 92
+  store globals+368
   push -51403784
-  store 93
+  store globals+372
   push 1735328473
-  store 94
+  store globals+376
   push -1926607734
-  store 95
+  store globals+380
   push -378558
-  store 96
+  store globals+384
   push -2022574463
-  store 97
+  store globals+388
   push 1839030562
-  store 98
+  store globals+392
   push -35309556
-  store 99
+  store globals+396
   push -1530992060
-  store 100
+  store globals+400
   push 1272893353
-  store 101
+  store globals+404
   push -155497632
-  store 102
+  store globals+408
   push -1094730640
-  store 103
+  store globals+412
   push 681279174
-  store 104
+  store globals+416
   push -358537222
-  store 105
+  store globals+420
   push -722521979
-  store 106
+  store globals+424
   push 76029189
-  store 107
+  store globals+428
   push -640364487
-  store 108
+  store globals+432
   push -421815835
-  store 109
+  store globals+436
   push 530742520
-  store 110
+  store globals+440
   push -995338651
-  store 111
+  store globals+444
   push -198630844
-  store 112
+  store globals+448
   push 1126891415
-  store 113
+  store globals+452
   push -1416354905
-  store 114
+  store globals+456
   push -57434055
-  store 115
+  store globals+460
   push 1700485571
-  store 116
+  store globals+464
   push -1894986606
-  store 117
+  store globals+468
   push -1051523
-  store 118
+  store globals+472
   push -2054922799
-  store 119
+  store globals+476
   push 1873313359
-  store 120
+  store globals+480
   push -30611744
-  store 121
+  store globals+484
   push -1560198380
-  store 122
+  store globals+488
   push 1309151649
-  store 123
+  store globals+492
   push -145523070
-  store 124
+  store globals+496
   push -1120210379
-  store 125
+  store globals+500
   push 718787259
-  store 126
+  store globals+504
   push -343485551
-  store 127
+  store globals+508
   push 7
-  store 128
+  store globals+512
   push 12
-  store 129
+  store globals+516
   push 17
-  store 130
+  store globals+520
   push 22
-  store 131
+  store globals+524
   push 7
-  store 132
+  store globals+528
   push 12
-  store 133
+  store globals+532
   push 17
-  store 134
+  store globals+536
   push 22
-  store 135
+  store globals+540
   push 7
-  store 136
+  store globals+544
   push 12
-  store 137
+  store globals+548
   push 17
-  store 138
+  store globals+552
   push 22
-  store 139
+  store globals+556
   push 7
-  store 140
+  store globals+560
   push 12
-  store 141
+  store globals+564
   push 17
-  store 142
+  store globals+568
   push 22
-  store 143
+  store globals+572
   push 5
-  store 144
+  store globals+576
   push 9
-  store 145
+  store globals+580
   push 14
-  store 146
+  store globals+584
   push 20
-  store 147
+  store globals+588
   push 5
-  store 148
+  store globals+592
   push 9
-  store 149
+  store globals+596
   push 14
-  store 150
+  store globals+600
   push 20
-  store 151
+  store globals+604
   push 5
-  store 152
+  store globals+608
   push 9
-  store 153
+  store globals+612
   push 14
-  store 154
+  store globals+616
   push 20
-  store 155
+  store globals+620
   push 5
-  store 156
+  store globals+624
   push 9
-  store 157
+  store globals+628
   push 14
-  store 158
+  store globals+632
   push 20
-  store 159
+  store globals+636
   push 4
-  store 160
+  store globals+640
   push 11
-  store 161
+  store globals+644
   push 16
-  store 162
+  store globals+648
   push 23
-  store 163
+  store globals+652
   push 4
-  store 164
+  store globals+656
   push 11
-  store 165
+  store globals+660
   push 16
-  store 166
+  store globals+664
   push 23
-  store 167
+  store globals+668
   push 4
-  store 168
+  store globals+672
   push 11
-  store 169
+  store globals+676
   push 16
-  store 170
+  store globals+680
   push 23
-  store 171
+  store globals+684
   push 4
-  store 172
+  store globals+688
   push 11
-  store 173
+  store globals+692
   push 16
-  store 174
+  store globals+696
   push 23
-  store 175
+  store globals+700
   push 6
-  store 176
+  store globals+704
   push 10
-  store 177
+  store globals+708
   push 15
-  store 178
+  store globals+712
   push 21
-  store 179
+  store globals+716
   push 6
-  store 180
+  store globals+720
   push 10
-  store 181
+  store globals+724
   push 15
-  store 182
+  store globals+728
   push 21
-  store 183
+  store globals+732
   push 6
-  store 184
+  store globals+736
   push 10
-  store 185
+  store globals+740
   push 15
-  store 186
+  store globals+744
   push 21
-  store 187
+  store globals+748
   push 6
-  store 188
+  store globals+752
   push 10
-  store 189
+  store globals+756
   push 15
-  store 190
+  store globals+760
   push 21
-  store 191
+  store globals+764
   ret
 
+
+# The globals of this program. Each former slot N is at globals+4N.
+globals:
+  reserve 768

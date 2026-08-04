@@ -33,14 +33,14 @@ VM share.
 | 17 | `jmp target` | unsigned `u32` | — | Jump unconditionally to an absolute code offset. |
 | 18 | `jmp_zero target` | unsigned `u32` | `condition →` | Jump when `condition` is `0`. |
 | 19 | `jmp_not_zero target` | unsigned `u32` | `condition →` | Jump when `condition` is not `0`. |
-| 20 | `load address` | unsigned `u32` | `→ data[address]` | Push a value from the data segment. |
-| 21 | `store address` | unsigned `u32` | `value →` | Pop a value into the data segment. |
+| 20 | `load address` | unsigned `u32` | `→ i32 at address` | Push the 32-bit value at a byte address in memory. |
+| 21 | `store address` | unsigned `u32` | `value →` | Write 32 bits of `value` to a byte address in memory. Refused if it names the code. |
 | 22 | `call target` | unsigned `u32` | — | Save the next instruction address and jump to `target`. |
 | 23 | `ret` | — | — | Return to the address saved by `call`. |
 | 24 | `foreign_call name` | unsigned `u8` import index | `arg1 ... argN → result` | Call an `extern` declaration. |
 | 25 | `print_string` | — | `address → address` | Print the NUL-terminated string at a VIG bytecode address. |
-| 26 | `load_at` | — | `address → data[address]` | Push a value from the data segment, using an address taken from the stack. |
-| 27 | `store_at` | — | `value address →` | Pop a value into the data segment, using an address taken from the stack. |
+| 26 | `load_at` | — | `address → i32 at address` | The same instruction as `load32`. The older name is kept. |
+| 27 | `store_at` | — | `value address →` | The same instruction as `store32`. The older name is kept. |
 | 28 | `and` | — | `a b → a & b` | Compute the bitwise AND of two values. |
 | 29 | `or` | — | `a b → a \| b` | Compute the bitwise OR of two values. |
 | 30 | `xor` | — | `a b → a ^ b` | Compute the bitwise XOR of two values. |
@@ -117,9 +117,23 @@ not remove the value. For example, `push -1` followed by `print_hex` prints
 ## Indirect data access
 
 `load` and `store` encode their address in the instruction, so it is fixed at
-assembly time. `load_at` and `store_at` take the address from the stack instead,
-which is what makes arrays and computed offsets possible: the address can be the
-result of any calculation.
+assembly time. That address is a byte address in guest memory, and a label is how a
+program names one:
+
+```asm
+    push 40
+    store counter
+    load counter
+    print
+    halt
+counter:
+    reserve 4
+```
+
+`load_at` and `store_at` take the address from the stack instead, which is what
+makes arrays and computed offsets possible: the address can be the result of any
+calculation. Each of the two is now the same instruction as `load32` and `store32`,
+and the older names are kept so a program that used them needs no change.
 
 For `store_at` the address is on top, above the value, so a write reads as "push
 what to store, push where to store it":
@@ -133,9 +147,12 @@ push 2
 load_at     # → 7
 ```
 
-Both instructions fault with `SegmentFault` on a negative address or one at or
-beyond the end of the data segment. `examples\array_sum.vigas` fills and then
-sums a ten-element array with computed addresses.
+Both instructions fault with `SegmentFault` on a negative address, and on one whose
+four-byte access does not fit inside memory. A `store` into the code region is
+refused as well: the assembler reports `StoreIntoCodeRegion` when the address is in
+the instruction, and the VM traps with `WriteToCodeRegion` when the program
+calculated it. `examples\array_sum.vigas` fills and then sums a ten-element array
+with computed addresses.
 
 ## Byte-addressed memory
 
@@ -153,12 +170,14 @@ greeting:
     asciiz "hi"
 ```
 
-These are separate from `load`, `store`, `load_at` and `store_at`. Those four
-index the i32 data segment by slot, which is a different space: `load 4` reads the
-fifth slot of the segment, while `load32` with 4 on the stack reads the four bytes
-at offset 4 of memory. The globals move out of the segment in a later stage.
+`load`, `store`, `load_at` and `store_at` address the same memory. There is one
+address space: `load 4` and `load32` with 4 on the stack read the same four bytes.
+Therefore the address of a global is an ordinary value, and a program can compute
+with it. That is what makes a pointer, an array and a structure possible.
 
-`reserve` gives a label some zero-filled bytes to work with:
+`reserve` gives a label some zero-filled bytes to work with. Those bytes are a
+length in the container header and not bytes of the file, so an array of a thousand
+integers costs nothing on disk:
 
 ```asm
     push 1000

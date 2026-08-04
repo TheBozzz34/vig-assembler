@@ -1,13 +1,17 @@
 # Stores 40 in data slot zero, calls a routine, and prints 42.
 start:
   push 40
-  store 0
+  store globals+0
   call increment
   print
   halt
 
 increment:
-  load 0
+  load globals+0
   push 2
   add
   ret
+
+# The globals of this program. Each former slot N is at globals+4N.
+globals:
+  reserve 4

@@ -7,11 +7,17 @@ const foreign = bytecode.foreign;
 const verify = bytecode.verify;
 const OpCode = bytecode.OpCode;
 
-/// The region of the program that a label points into. The assembler makes the
-/// static data apart from the code. Therefore it knows the final address of a
-/// data label only after it knows the length of the code. That address is
-/// `code_len + offset`.
-const Region = enum { code, data };
+/// The region of the program that a label points into.
+///
+/// The three regions sit in memory in this order: the code, then the static data
+/// from the file, then the zero-filled bytes that `reserve` asks for. Therefore the
+/// assembler knows the final address of a label in a later region only after it
+/// knows the length of each earlier one.
+///
+/// A label in `bss` needs both earlier lengths, and the file holds no byte for it.
+/// That is the point of the region: a program declares a large array and the file
+/// stays small.
+const Region = enum { code, data, bss };
 
 const Label = struct {
     region: Region,
@@ -46,6 +52,7 @@ pub fn assemble(allocator: std.mem.Allocator, source: []const u8, diagnostics: ?
 
     var code_len: usize = 0;
     var data_len: usize = 0;
+    var bss_len: usize = 0;
     var entry_label: ?[]const u8 = null;
 
     // Pass one: measure the two regions and put each label at its address.
@@ -84,8 +91,8 @@ pub fn assemble(allocator: std.mem.Allocator, source: []const u8, diagnostics: ?
         }
 
         if (isDirective(line, "reserve")) {
-            try place(&labels, &pending_labels, .data, data_len);
-            data_len += try parseReserve(line);
+            try place(&labels, &pending_labels, .bss, bss_len);
+            bss_len += try parseReserve(line);
             continue;
         }
 
@@ -113,17 +120,21 @@ pub fn assemble(allocator: std.mem.Allocator, source: []const u8, diagnostics: ?
             continue;
         }
 
-        if (isDirective(line, "reserve")) {
-            try data.appendNTimes(allocator, 0, try parseReserve(line));
-            continue;
-        }
+        // `reserve` writes no byte. Its length is in the header, and the VM clears
+        // memory before it loads a program.
+        if (isDirective(line, "reserve")) continue;
 
         var tokens = std.mem.tokenizeAny(u8, line, " \t,");
         const instruction = try opCodeFor(tokens.next() orelse unreachable);
         const operand = try parseOperand(
             instruction,
             &tokens,
-            .{ .labels = &labels, .imports_by_name = &imports_by_name, .code_len = code_len },
+            .{
+                .labels = &labels,
+                .imports_by_name = &imports_by_name,
+                .code_len = code_len,
+                .data_len = data_len,
+            },
         );
 
         var buffer: [8]u8 = undefined;
@@ -138,6 +149,7 @@ pub fn assemble(allocator: std.mem.Allocator, source: []const u8, diagnostics: ?
         .imports = imports.items,
         .code = code.items,
         .data = data.items,
+        .bss_len = std.math.cast(u32, bss_len) orelse return error.AddressOutOfRange,
         .entry_point = entry_point,
     };
     const output = try allocator.alloc(u8, try container.encodedSize(layout));
@@ -168,14 +180,16 @@ const Scope = struct {
     labels: *const std.StringHashMap(Label),
     imports_by_name: *const std.StringHashMap(u8),
     code_len: usize,
+    data_len: usize,
 
-    /// The absolute address of a label in the program image. That image is the
-    /// code region, then the static-data region.
+    /// The absolute address of a label in the program image. That image is the code
+    /// region, then the static-data region, then the zero-filled region.
     fn address(self: Scope, name: []const u8) ?usize {
         const label = self.labels.get(name) orelse return null;
         return switch (label.region) {
             .code => label.offset,
             .data => self.code_len + label.offset,
+            .bss => self.code_len + self.data_len + label.offset,
         };
     }
 };
@@ -194,24 +208,57 @@ fn parseOperand(
     const text = tokens.next() orelse return error.MissingOperand;
     if (tokens.next() != null) return error.UnexpectedOperand;
 
-    const label = if (kind.acceptsLabel()) scope.address(text) else null;
+    // An import is named and never calculated, so it does not go through the
+    // expression parser.
+    if (kind == .import_index) {
+        return .{ .import_index = scope.imports_by_name.get(text) orelse return error.UnknownForeignImport };
+    }
+
+    const value = try resolveAddress(text, scope, kind.acceptsLabel());
     return switch (kind) {
-        .none => unreachable,
-        .signed => .{ .signed = if (label) |value|
-            std.math.cast(i32, value) orelse return error.AddressOutOfRange
-        else
-            try std.fmt.parseInt(i32, text, 0) },
-        .code_target => .{ .code_target = try codeTarget(label, text) },
-        .data_address => .{ .data_address = try std.fmt.parseInt(u32, text, 0) },
-        .import_index => .{
-            .import_index = scope.imports_by_name.get(text) orelse return error.UnknownForeignImport,
-        },
+        .none, .import_index => unreachable,
+        .signed => .{ .signed = std.math.cast(i32, value) orelse return error.AddressOutOfRange },
+        .code_target => .{ .code_target = std.math.cast(u32, value) orelse return error.AddressOutOfRange },
+        .data_address => .{ .data_address = std.math.cast(u32, value) orelse return error.AddressOutOfRange },
     };
 }
 
-fn codeTarget(label: ?usize, text: []const u8) !u32 {
-    const value = label orelse try std.fmt.parseInt(usize, text, 0);
-    return std.math.cast(u32, value) orelse error.AddressOutOfRange;
+/// Read an operand that names an address, and give its value.
+///
+/// The operand is a number, a label, or a label and a constant joined by `+` or `-`.
+/// The last form is what an array and a structure need: `numbers+8` is the third
+/// `i32` of `numbers`, and `point+4` is the second field of `point`. Without it a
+/// program must know the address of a label to reach anything but its first byte,
+/// and the source cannot know that address.
+///
+/// The expression carries no space, so `numbers+8` is one operand and `numbers + 8`
+/// is three. A join of the tokens would make `push 1 2` mean `push 12`, and that
+/// line is a mistake that the assembler must report.
+fn resolveAddress(text: []const u8, scope: Scope, accepts_label: bool) !i64 {
+    // The whole text is tried as a label first. Therefore a label whose name holds a
+    // `-` still resolves, and only a name that no label has becomes an expression.
+    if (accepts_label) {
+        if (scope.address(text)) |address| return @intCast(address);
+    }
+
+    const split = std.mem.indexOfAny(u8, text, "+-");
+    // A sign at the start belongs to the number and does not make an expression.
+    if (split == null or split.? == 0) return std.fmt.parseInt(i64, text, 0);
+    if (!accepts_label) return error.InvalidCharacter;
+
+    const name = text[0..split.?];
+    const offset_text = text[split.? + 1 ..];
+    if (offset_text.len == 0) return error.MissingOperand;
+
+    const base = scope.address(name) orelse return error.UnknownLabel;
+    const offset = try std.fmt.parseInt(i64, offset_text, 0);
+    const total = if (text[split.?] == '+')
+        @as(i64, @intCast(base)) + offset
+    else
+        @as(i64, @intCast(base)) - offset;
+
+    if (total < 0) return error.AddressOutOfRange;
+    return total;
 }
 
 fn resolveEntryPoint(entry_label: ?[]const u8, labels: *const std.StringHashMap(Label)) !u32 {
@@ -238,6 +285,10 @@ fn verifyProgram(
         .code = code,
         .entry_point = entry_point,
         .import_count = @intCast(import_count),
+        // The assembler knows the length of the code, so it can refuse a `store`
+        // that would write an instruction. It does not know the size of the memory
+        // of the VM that will run the program, so it leaves that bound to the VM.
+        .code_len = @intCast(code.len),
     }, scratch, &failure) catch |err| {
         if (diagnostics) |slot| slot.verification = failure;
         return err;
@@ -352,25 +403,29 @@ fn expectRegions(source: []const u8, expected_code: []const u8, expected_data: [
 }
 
 test "assembles labels and the newest VIG opcodes" {
+    // A global is a label now, and not a slot index. The code is 29 bytes and the
+    // program holds no static data, so `counter` is at address 29.
     const source =
         \\start:
         \\  push 40
-        \\  store 0
+        \\  store counter
         \\  call increment
         \\  print
         \\  halt
         \\increment:
-        \\  load 0
+        \\  load counter
         \\  push 2
         \\  add
         \\  ret
+        \\counter:
+        \\  reserve 4
     ;
     const expected = [_]u8{
         1,  40, 0,  0, 0,
-        21, 0,  0,  0, 0,
+        21, 29, 0,  0, 0,
         22, 17, 0,  0, 0,
         4,  0,
-        20, 0,  0,  0, 0,
+        20, 29, 0,  0, 0,
         1,  2,  0,  0, 0,
         2,  23,
     };
@@ -612,11 +667,16 @@ test "rejects malformed operands and string literals" {
     try testing.expectError(error.UnexpectedOperand, assemble(testing.allocator, "halt 1", null));
     try testing.expectError(error.UnexpectedOperand, assemble(testing.allocator, "push 1 2", null));
     try testing.expectError(error.InvalidStringLiteral, assemble(testing.allocator, "asciiz nope", null));
-    // A data address is never a label. Therefore a label in that position is a
-    // failure in the parse.
+    // A data address is a label now. But this label names an instruction, so the
+    // store would write the code and the verifier refuses it.
+    try testing.expectError(
+        error.StoreIntoCodeRegion,
+        assemble(testing.allocator, "store here\nhere:\nhalt", null),
+    );
+    // A name that no label has, and that is not a number, is still a failure.
     try testing.expectError(
         error.InvalidCharacter,
-        assemble(testing.allocator, "store here\nhere:\nhalt", null),
+        assemble(testing.allocator, "store nowhere\nhalt", null),
     );
 }
 
@@ -643,9 +703,10 @@ test "verification rejects a program whose control flow leaves the code" {
     );
 }
 
-test "reserve places zero bytes in the data region and labels them" {
-    // `slot` is at the start of the data region and `flag` is four bytes after it.
-    // The code is 11 bytes, so the two addresses are 11 and 15.
+test "reserve declares zero-filled bytes that the file does not hold" {
+    // `slot` is at the start of the zero-filled region and `flag` is four bytes
+    // after it. The code is 11 bytes and there is no static data, so the two
+    // addresses are 11 and 15.
     const source =
         \\  push slot
         \\  push flag
@@ -660,10 +721,18 @@ test "reserve places zero bytes in the data region and labels them" {
         1, 15, 0, 0, 0,
         0,
     };
-    try expectRegions(source, &expected_code, &[_]u8{ 0, 0, 0, 0, 0 });
+    // The data region is empty. The five bytes are a length in the header.
+    try expectRegions(source, &expected_code, "");
+
+    const output = try assemble(testing.allocator, source, null);
+    defer testing.allocator.free(output);
+    const image = try container.parse(output);
+    try testing.expectEqual(@as(u32, 5), image.header.bss_len);
+    try testing.expectEqual(@as(usize, 11), image.fileImageLen());
+    try testing.expectEqual(@as(usize, 16), image.imageLen());
 }
 
-test "reserve and asciiz share the data region in declaration order" {
+test "the zero-filled region comes after the static data" {
     const source =
         \\  push text
         \\  push buffer
@@ -679,7 +748,71 @@ test "reserve and asciiz share the data region in declaration order" {
         1, 14, 0, 0, 0,
         0,
     };
-    try expectRegions(source, &expected_code, "ab\x00\x00\x00");
+    try expectRegions(source, &expected_code, "ab\x00");
+
+    const output = try assemble(testing.allocator, source, null);
+    defer testing.allocator.free(output);
+    try testing.expectEqual(@as(u32, 2), (try container.parse(output)).header.bss_len);
+}
+
+test "a label and a constant address a member of an array" {
+    // `numbers+8` is the third i32 of `numbers`. Without this form a program cannot
+    // name anything but the first byte of a label.
+    const source =
+        \\  push 1
+        \\  store numbers
+        \\  push 2
+        \\  store numbers+4
+        \\  push 3
+        \\  store numbers+8
+        \\  load numbers+8
+        \\  halt
+        \\numbers:
+        \\  reserve 12
+    ;
+    // Six five-byte instructions, a five-byte load, then `halt`: 36 bytes.
+    const expected_code = [_]u8{
+        1,  1,  0,  0, 0,
+        21, 36, 0,  0, 0,
+        1,  2,  0,  0, 0,
+        21, 40, 0,  0, 0,
+        1,  3,  0,  0, 0,
+        21, 44, 0,  0, 0,
+        20, 44, 0,  0, 0,
+        0,
+    };
+    try expectRegions(source, &expected_code, "");
+}
+
+test "a constant can also be subtracted from a label" {
+    const source =
+        \\  load tail-4
+        \\  halt
+        \\head:
+        \\  reserve 8
+        \\tail:
+        \\  reserve 4
+    ;
+    // The code is six bytes, so `head` is at 6 and `tail` is at 14. `tail-4` is 10.
+    try expectRegions(source, &[_]u8{ 20, 10, 0, 0, 0, 0 }, "");
+}
+
+test "rejects an address expression whose label does not exist" {
+    try testing.expectError(
+        error.UnknownLabel,
+        assemble(testing.allocator, "load missing+4\nhalt", null),
+    );
+    // An expression needs a number after the sign.
+    try testing.expectError(
+        error.MissingOperand,
+        assemble(testing.allocator, "load here+\nhalt\nhere:\n  reserve 4", null),
+    );
+    // A space makes the line three tokens, and three tokens is a mistake. A join
+    // would make `push 1 2` mean `push 12`.
+    try testing.expectError(
+        error.UnexpectedOperand,
+        assemble(testing.allocator, "load here + 4\nhalt\nhere:\n  reserve 4", null),
+    );
 }
 
 test "rejects a reserve with no size, a zero size, or extra tokens" {

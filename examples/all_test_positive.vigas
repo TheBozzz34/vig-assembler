@@ -352,8 +352,8 @@ start:
   pop
 
   push 314159
-  store 7
-  load 7
+  store globals+28
+  load globals+28
   push 314159
   call check
 
@@ -527,31 +527,31 @@ test_25_done:
   pop
 
   push 5
-  store 0
+  store globals+0
 
   push 0
-  store 1
+  store globals+4
 
 test_28_loop:
 
   # accumulator += counter
-  load 1
-  load 0
+  load globals+4
+  load globals+0
   add
-  store 1
+  store globals+4
 
   # counter -= 1
   #
   # dup keeps one copy for store and one copy for the branch.
-  load 0
+  load globals+0
   push 1
   sub
   dup
-  store 0
+  store globals+0
 
   jmp_not_zero test_28_loop
 
-  load 1
+  load globals+4
   push 15
   call check
 
@@ -565,8 +565,8 @@ test_28_loop:
   pop
 
   push -987654
-  store 255
-  load 255
+  store globals+1020
+  load globals+1020
   push -987654
   call check
 
@@ -655,3 +655,7 @@ nested_inner:
 
   push 20
   ret
+
+# The globals of this program. Each former slot N is at globals+4N.
+globals:
+  reserve 1024

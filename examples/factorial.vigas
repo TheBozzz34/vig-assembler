@@ -2,7 +2,7 @@
 
 start:
     push 12          # 15! overflows a 32-bit integer
-    store 0
+    store globals+0
 
     call fact
 
@@ -17,19 +17,19 @@ start:
 # Returns the factorial on the stack.
 #
 fact:
-    load 0
+    load globals+0
     push 1
     lte
     jmp_not_zero fact_base
 
     # save n
-    load 0
+    load globals+0
 
     # n = n - 1
     dup
     push 1
     sub
-    store 0
+    store globals+0
 
     # recursive call
     call fact
@@ -41,3 +41,7 @@ fact:
 fact_base:
     push 1
     ret
+
+# The globals of this program. Each former slot N is at globals+4N.
+globals:
+  reserve 4

@@ -12,93 +12,123 @@
 
 start:
     push 42
-    store 0
+    store globals+0
     push 7
-    store 1
+    store globals+4
     push 19
-    store 2
+    store globals+8
     push 3
-    store 3
+    store globals+12
     push 88
-    store 4
+    store globals+16
     push 15
-    store 5
+    store globals+20
     push 61
-    store 6
+    store globals+24
     push 4
-    store 7
+    store globals+28
     push 23
-    store 8
+    store globals+32
     push 50
-    store 9
+    store globals+36
 
     push 10
-    store 200
+    store globals+800
 
 pass:
     push 0
-    store 202       # swapped = 0
+    store globals+808   # swapped = 0
     push 0
-    store 201       # j = 0
+    store globals+804   # j = 0
 
 inner:
     # while j < n - 1
-    load 201
-    load 200
+    load globals+804
+    load globals+800
     push 1
     sub
     lt
     jmp_zero pass_end
 
     # if data[j] > data[j + 1]
-    load 201
+    load globals+804
+    # The index becomes a byte address: memory is addressed by byte now.
+    push 4
+    mul
+    push globals
+    add
     load_at
-    load 201
+    load globals+804
     push 1
+    add
+    # The index becomes a byte address: memory is addressed by byte now.
+    push 4
+    mul
+    push globals
     add
     load_at
     gt
     jmp_zero no_swap
 
     # temp = data[j]
-    load 201
+    load globals+804
+    # The index becomes a byte address: memory is addressed by byte now.
+    push 4
+    mul
+    push globals
+    add
     load_at
-    store 203
+    store globals+812
 
     # data[j] = data[j + 1]
-    load 201
+    load globals+804
     push 1
     add
+    # The index becomes a byte address: memory is addressed by byte now.
+    push 4
+    mul
+    push globals
+    add
     load_at         # value
-    load 201        # address
+    load globals+804   # address
+    # The index becomes a byte address: memory is addressed by byte now.
+    push 4
+    mul
+    push globals
+    add
     store_at
 
     # data[j + 1] = temp
-    load 203        # value
-    load 201
+    load globals+812   # value
+    load globals+804
     push 1
     add             # address
+    # The index becomes a byte address: memory is addressed by byte now.
+    push 4
+    mul
+    push globals
+    add
     store_at
 
     push 1
-    store 202       # swapped = 1
+    store globals+808   # swapped = 1
 
 no_swap:
-    load 201
+    load globals+804
     push 1
     add
-    store 201       # j++
+    store globals+804   # j++
     jmp inner
 
 pass_end:
     # The largest remaining element has bubbled to the end, so shrink the range.
-    load 200
+    load globals+800
     push 1
     sub
-    store 200
+    store globals+800
 
     # A pass that swapped nothing means the array is sorted.
-    load 202
+    load globals+808
     jmp_not_zero pass
 
     push sorted_label
@@ -107,23 +137,28 @@ pass_end:
 
     # Print all ten slots. n has been decremented, so the bound is a literal.
     push 0
-    store 201
+    store globals+804
 
 print_loop:
-    load 201
+    load globals+804
     push 10
     lt
     jmp_zero done
 
-    load 201
+    load globals+804
+    # The index becomes a byte address: memory is addressed by byte now.
+    push 4
+    mul
+    push globals
+    add
     load_at
     print
     pop
 
-    load 201
+    load globals+804
     push 1
     add
-    store 201
+    store globals+804
     jmp print_loop
 
 done:
@@ -131,3 +166,7 @@ done:
 
 sorted_label:
     asciiz "sorted:"
+
+# The globals of this program. Each former slot N is at globals+4N.
+globals:
+  reserve 816

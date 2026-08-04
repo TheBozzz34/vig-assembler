@@ -4,32 +4,36 @@
 start:
     # current value = 1
     push 1
-    store 0
+    store globals+0
 
     # counter = 31
     push 31
-    store 1
+    store globals+4
 
 loop:
     # print current value
-    load 0
+    load globals+0
     print
     pop             # print leaves the value on the stack
 
     # current *= 2
-    load 0
+    load globals+0
     push 2
     mul
-    store 0
+    store globals+0
 
     # counter--
-    load 1
+    load globals+4
     push 1
     sub
     dup
-    store 1
+    store globals+4
 
     # continue while counter != 0
     jmp_not_zero loop
 
     halt
+
+# The globals of this program. Each former slot N is at globals+4N.
+globals:
+  reserve 8
