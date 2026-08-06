@@ -76,6 +76,7 @@ VM share.
 | 60 | `sub_wrap` | — | `a b → a -% b` | Subtract and wrap modulo 2^32 instead of trapping. |
 | 61 | `mul_wrap` | — | `a b → a *% b` | Multiply and wrap modulo 2^32 instead of trapping. |
 | 62 | `call_indirect` | — | `target →` | Call the code address on the stack. |
+| 63 | `jmp_indirect` | — | `target →` | Jump to the code address on the stack, saving no return offset. |
 
 Bitwise instructions operate on the raw two's-complement representation of each
 `i32`. Shift and rotation counts use only their low five bits, so all counts are
@@ -416,6 +417,50 @@ address inside another instruction traps with `MisalignedTarget`.
 That last check needs the marks that verification leaves behind, so it applies to a
 container. Bare code with no header is never verified, and an indirect call there
 decodes from whatever address it was given.
+
+## Jump tables
+
+`jmp_indirect` takes its target off the stack the way `call_indirect` does, and
+saves nothing: control leaves and does not come back. Where `call_indirect` reaches
+another function, this one reaches a label of the function it is already in, which
+is what a `switch` wants — one load and one jump instead of a comparison for every
+case.
+
+The table is a row of code addresses in the data region, which `i32` writes:
+
+```asm
+    load_local 0        # the index
+    push 4
+    mul                 # four bytes to an entry
+    push table
+    add
+    load32              # the address of the arm
+    jmp_indirect
+case_zero:
+    push 100
+    jmp show
+case_one:
+    push 200
+    jmp show
+show:
+    print
+    ...
+table:
+    i32 case_zero, case_one
+```
+
+**Nothing checks the index.** A table has as many entries as it has, and reading
+past the end reads whatever follows it — which the VM will then treat as an
+address, and refuse if it does not name an instruction. The bounds test belongs in
+the program, before the load, exactly as it does on a real machine.
+
+Everything the previous section says about verifying an indirect target applies
+here too: the arms are named only by the table, so the walk at load time reaches
+none of them, and each is verified the first time the jump goes there.
+
+`--check-stack` cannot follow a `jmp_indirect` any more than it can follow a
+`call_indirect`. It checks the height the jump itself needs and stops on that path,
+so an arm reached only through a table is not depth-checked.
 
 ## Program layout
 

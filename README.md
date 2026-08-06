@@ -79,8 +79,9 @@ loop:
 `load` and `store` take unsigned 32-bit data addresses. `jmp`, `jmp_zero`,
 `jmp_not_zero`, and `call` accept either a label or an explicit code offset.
 `call_indirect` takes no operand and calls the code address on the stack, which is
-how a function pointer is called. See
-[OPCODES.md](OPCODES.md#indirect-calls).
+how a function pointer is called, and `jmp_indirect` jumps to one without saving a
+return offset, which is how a jump table dispatches a `switch`. See
+[OPCODES.md](OPCODES.md#indirect-calls) and [jump tables](OPCODES.md#jump-tables).
 
 Instructions whose result depends on the sign of their operands come in pairs:
 `lt`/`lt_u` and its three companions, `div`/`div_u`, `mod`/`mod_u`, and
