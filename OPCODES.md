@@ -66,11 +66,22 @@ VM share.
 | 50 | `load_local index` | unsigned `u16` frame slot | `→ frame[index]` | Push an argument or a local of the running function. |
 | 51 | `store_local index` | unsigned `u16` frame slot | `value →` | Pop a value into an argument or a local of the running function. |
 | 52 | `local_addr index` | unsigned `u16` frame slot | `→ address` | Push the memory address of an argument or a local. |
+| 53 | `lt_u` | — | `a b → bool` | Push 1 when a < b as unsigned values, otherwise 0. |
+| 54 | `lte_u` | — | `a b → bool` | Push 1 when a <= b as unsigned values, otherwise 0. |
+| 55 | `gt_u` | — | `a b → bool` | Push 1 when a > b as unsigned values, otherwise 0. |
+| 56 | `gte_u` | — | `a b → bool` | Push 1 when a >= b as unsigned values, otherwise 0. |
+| 57 | `div_u` | — | `a b → a / b` | Unsigned division. Traps on division by zero. |
+| 58 | `mod_u` | — | `a b → a % b` | Unsigned remainder. Traps on division by zero. |
+| 59 | `shr_s` | — | `a b → a >> (b mod 32)` | Shift right arithmetically, filling with the sign bit. |
+| 60 | `sub_wrap` | — | `a b → a -% b` | Subtract and wrap modulo 2^32 instead of trapping. |
+| 61 | `mul_wrap` | — | `a b → a *% b` | Multiply and wrap modulo 2^32 instead of trapping. |
+| 62 | `call_indirect` | — | `target →` | Call the code address on the stack. |
 
 Bitwise instructions operate on the raw two's-complement representation of each
 `i32`. Shift and rotation counts use only their low five bits, so all counts are
-effectively reduced modulo 32. `shr_u` fills high bits with zero, while `shl`,
-`rotl`, and `add_wrap` retain the resulting 32-bit pattern on the signed stack.
+effectively reduced modulo 32. `shr_u` fills high bits with zero and `shr_s` fills
+them with the sign bit, while `shl`, `rotl`, and the wrapping arithmetic retain the
+resulting 32-bit pattern on the signed stack.
 
 ## Runtime input
 
@@ -252,6 +263,38 @@ value has to fill it somehow. `load8_u` puts zeros in the upper 24 bits and
 `unsigned char` and `signed char`. A store needs no such pair: it keeps the low
 bits and does not ask what they mean.
 
+## Signed and unsigned
+
+A VIG value is 32 bits and nothing on the stack says what those bits mean. Most
+instructions do not need to know: an add, a store and a test for equality give the
+same answer either way. The instructions where the sign bit changes the result come
+in pairs, and the compiler picks the one that matches the type it is working with.
+
+| Signed | Unsigned | Why they differ |
+| --- | --- | --- |
+| `lt` `lte` `gt` `gte` | `lt_u` `lte_u` `gt_u` `gte_u` | `-1` is the smallest signed value and the largest unsigned one |
+| `div` `mod` | `div_u` `mod_u` | `0xffffffff / 2` is `0` signed and `0x7fffffff` unsigned |
+| `shr_s` | `shr_u` | the vacated bits take the sign bit or take zeros |
+
+`eq` and `ne` need no such pair, because equal bits are equal whatever they mean.
+
+The two divisions also differ in what they refuse. `div` traps with
+`IntegerOverflow` on `minInt / -1`, the one pair whose result an `i32` cannot hold;
+the unsigned form has an answer for every pair. Both trap on a zero divisor.
+
+## Overflow
+
+`add`, `sub` and `mul` trap with `IntegerOverflow` when the result does not fit,
+which is what a language wants where overflow is a fault. `add_wrap`, `sub_wrap`
+and `mul_wrap` give the low 32 bits instead and never trap, which is what unsigned
+arithmetic in C is defined to do:
+
+```asm
+push 0
+push 1
+sub_wrap        # → -1, the bits 0xffffffff
+```
+
 ## Call frames
 
 `call` and `ret` on their own give a subroutine a return address and nothing else. A
@@ -315,6 +358,61 @@ no frame keeps its own stack in order, as every VIG program did before frames
 existed.
 
 Use `ret_val` to return a value and `ret` to return none.
+
+## Indirect calls
+
+`call` names its target in the instruction, so the target is fixed when the program
+is assembled. `call_indirect` takes the target off the stack instead, which is what
+a function pointer needs. The address of a function is an ordinary value: `push` it,
+store it, put it in a table, load it back and call it.
+
+```asm
+entry main
+main:
+    push 21
+    push table+4    # the second entry
+    load32
+    call_indirect   # → double(21)
+    print
+    halt
+add_one:
+    enter 1 0
+    load_local 0
+    push 1
+    add
+    ret_val
+double:
+    enter 1 0
+    load_local 0
+    push 2
+    mul
+    ret_val
+table:
+    i32 add_one, double
+```
+
+The target is popped before the call, so the values under it are the arguments and
+`enter` finds them where it would for a direct call. Everything else — the frame,
+`ret_val`, the operand stack — works exactly as it does for `call`.
+
+### When such a function is verified
+
+The verifier starts at the entry point and follows what it reads. No instruction
+names `add_one` or `double` above, so that walk reaches neither, and a check at load
+time could only reject a program it did not understand. Instead the VM verifies the
+function the first time a call goes to it, and keeps the result: a second call to
+the same address costs one comparison. The code region is read-only for the whole
+run, so the answer is the one a check before the run would have given.
+
+The practical difference is *when* a bad target is reported. A `call_indirect` to an
+address whose function does not verify traps at the call, with the same error a load
+would have given — `UnknownOpcode`, `ExecutionRunsOffEnd` and the rest. An address
+outside the code region, or a negative one, traps with `SegmentFault`, and an
+address inside another instruction traps with `MisalignedTarget`.
+
+That last check needs the marks that verification leaves behind, so it applies to a
+container. Bare code with no header is never verified, and an indirect call there
+decodes from whatever address it was given.
 
 ## Program layout
 

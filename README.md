@@ -76,6 +76,15 @@ loop:
 `push` accepts a signed 32-bit decimal/base-prefixed value or a label address.
 `load` and `store` take unsigned 32-bit data addresses. `jmp`, `jmp_zero`,
 `jmp_not_zero`, and `call` accept either a label or an explicit code offset.
+`call_indirect` takes no operand and calls the code address on the stack, which is
+how a function pointer is called. See
+[OPCODES.md](OPCODES.md#indirect-calls).
+
+Instructions whose result depends on the sign of their operands come in pairs:
+`lt`/`lt_u` and its three companions, `div`/`div_u`, `mod`/`mod_u`, and
+`shr_s`/`shr_u`. `add`, `sub` and `mul` trap on signed overflow, and `add_wrap`,
+`sub_wrap` and `mul_wrap` wrap instead. See
+[OPCODES.md](OPCODES.md#signed-and-unsigned).
 
 Six directives are available. `extern` declares a foreign import and `entry` names
 the label execution starts at. The other four describe data:
