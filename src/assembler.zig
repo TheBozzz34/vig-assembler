@@ -90,6 +90,16 @@ pub fn assemble(allocator: std.mem.Allocator, source: []const u8, diagnostics: ?
             continue;
         }
 
+        // A value directive needs no label address to measure itself: the width is
+        // the directive and the count is the number of values. Therefore pass one
+        // knows the size of the region even though a value can name a label that
+        // only pass two can resolve.
+        if (dataWidth(line)) |width| {
+            try place(&labels, &pending_labels, .data, data_len);
+            data_len += width * try countValues(line);
+            continue;
+        }
+
         if (isDirective(line, "reserve")) {
             try place(&labels, &pending_labels, .bss, bss_len);
             bss_len += try parseReserve(line);
@@ -108,6 +118,16 @@ pub fn assemble(allocator: std.mem.Allocator, source: []const u8, diagnostics: ?
     var data = try std.ArrayList(u8).initCapacity(allocator, data_len);
     defer data.deinit(allocator);
 
+    // Every label has an address now, and each region has its final length.
+    // Therefore one scope answers for the whole pass, and an instruction operand and
+    // a data value resolve a name in exactly the same way.
+    const scope: Scope = .{
+        .labels = &labels,
+        .imports_by_name = &imports_by_name,
+        .code_len = code_len,
+        .data_len = data_len,
+    };
+
     lines = std.mem.splitScalar(u8, source, '\n');
     while (lines.next()) |raw_line| {
         const line = meaningfulLine(raw_line);
@@ -120,22 +140,18 @@ pub fn assemble(allocator: std.mem.Allocator, source: []const u8, diagnostics: ?
             continue;
         }
 
+        if (dataWidth(line)) |width| {
+            try appendValues(allocator, &data, line, width, scope);
+            continue;
+        }
+
         // `reserve` writes no byte. Its length is in the header, and the VM clears
         // memory before it loads a program.
         if (isDirective(line, "reserve")) continue;
 
         var tokens = std.mem.tokenizeAny(u8, line, " \t,");
         const instruction = try opCodeFor(tokens.next() orelse unreachable);
-        const operand = try parseOperand(
-            instruction,
-            &tokens,
-            .{
-                .labels = &labels,
-                .imports_by_name = &imports_by_name,
-                .code_len = code_len,
-                .data_len = data_len,
-            },
-        );
+        const operand = try parseOperand(instruction, &tokens, scope);
 
         var buffer: [8]u8 = undefined;
         const size = try encode.encode(&buffer, instruction, operand);
@@ -369,6 +385,84 @@ fn parseAsciiz(line: []const u8) ![]const u8 {
         return error.InvalidStringLiteral;
     }
     return contents;
+}
+
+/// The directives that put an initialized value in the static-data region, with the
+/// width of one value in bytes.
+///
+/// The names say how many bits a value has, which is how the load and the store
+/// mnemonics name a width and how an `extern` declaration names an argument type.
+/// A program therefore reads what it wrote with the instruction of the same number:
+/// `i16` and `load16_s`.
+const data_widths = [_]struct { directive: []const u8, width: usize }{
+    .{ .directive = "i8", .width = 1 },
+    .{ .directive = "i16", .width = 2 },
+    .{ .directive = "i32", .width = 4 },
+};
+
+/// The width of one value for the data directive on this line, or null if the line
+/// is not one of them.
+fn dataWidth(line: []const u8) ?usize {
+    for (data_widths) |entry| {
+        if (isDirective(line, entry.directive)) return entry.width;
+    }
+    return null;
+}
+
+/// How many values a data directive lists.
+///
+/// A directive with no value is a mistake rather than an empty declaration: it
+/// writes nothing, so the label before it takes the address of whatever comes next,
+/// which is the same fault that `reserve 0` has.
+fn countValues(line: []const u8) !usize {
+    var tokens = std.mem.tokenizeAny(u8, line, " \t,");
+    _ = tokens.next(); // the directive
+
+    var count: usize = 0;
+    while (tokens.next()) |_| count += 1;
+    if (count == 0) return error.MissingOperand;
+    return count;
+}
+
+/// Write each value that a data directive lists, in the order that the source wrote
+/// them.
+///
+/// A value is a number or a label expression, exactly as an instruction operand is.
+/// Therefore `i32 greeting` puts the address of a string in the data region, and a C
+/// initializer that holds a pointer or a function address needs nothing more. The
+/// values are separated by a space or a comma, so an array is one line:
+/// `i32 1, 2, 3`.
+fn appendValues(
+    allocator: std.mem.Allocator,
+    data: *std.ArrayList(u8),
+    line: []const u8,
+    width: usize,
+    scope: Scope,
+) !void {
+    var tokens = std.mem.tokenizeAny(u8, line, " \t,");
+    _ = tokens.next(); // the directive
+
+    while (tokens.next()) |text| {
+        var buffer: [4]u8 = undefined;
+        try writeValue(&buffer, try resolveAddress(text, scope, true), width);
+        try data.appendSlice(allocator, buffer[0..width]);
+    }
+}
+
+/// Put `value` in the first `width` bytes of `buffer`, in the order that memory
+/// holds them.
+///
+/// The permitted range covers the signed form and the unsigned form of the width, so
+/// `i8 -1` and `i8 255` both give the byte `0xff`. The two spellings mean the same
+/// byte, and which one appears is a matter of what the source said. A value outside
+/// both is a mistake and not something to truncate without a word.
+fn writeValue(buffer: *[4]u8, value: i64, width: usize) !void {
+    const bits: u6 = @intCast(width * 8);
+    const lowest = -(@as(i64, 1) << (bits - 1));
+    const highest = (@as(i64, 1) << bits) - 1;
+    if (value < lowest or value > highest) return error.ValueOutOfRange;
+
+    std.mem.writeInt(u32, buffer, @truncate(@as(u64, @bitCast(value))), .little);
 }
 
 /// `reserve N` gives the label before it `N` zero bytes in the static-data region.
@@ -872,6 +966,137 @@ test "rejects a reserve with no size, a zero size, or extra tokens" {
         error.InvalidCharacter,
         assemble(testing.allocator, "halt\nx:\n  reserve four", null),
     );
+}
+
+test "a data directive writes initialized values in the static-data region" {
+    // The three widths, each with the value 1, so the bytes show the width and the
+    // order and nothing else. `i32` is four bytes little-endian, as every value in
+    // memory is.
+    const source =
+        \\  halt
+        \\one_byte:
+        \\  i8 1
+        \\two_bytes:
+        \\  i16 1
+        \\four_bytes:
+        \\  i32 1
+    ;
+    try expectRegions(source, &[_]u8{0}, "\x01\x01\x00\x01\x00\x00\x00");
+}
+
+test "one data directive lists several values" {
+    // A comma and a space separate values the same way, because the tokenizer takes
+    // both. An array initializer is therefore one line.
+    const source =
+        \\  halt
+        \\numbers:
+        \\  i32 1, 2, 3
+        \\bytes:
+        \\  i8 4 5 6
+    ;
+    try expectRegions(
+        source,
+        &[_]u8{0},
+        "\x01\x00\x00\x00\x02\x00\x00\x00\x03\x00\x00\x00\x04\x05\x06",
+    );
+}
+
+test "a data value can be a label or a label expression" {
+    // This is what a C initializer that holds a pointer needs: `char *p = message;`
+    // and `int *tail = &numbers[2];`. The code is one byte, so `message` is at 1 and
+    // the pointer that follows the string is at 4.
+    const source =
+        \\  halt
+        \\message:
+        \\  asciiz "hi"
+        \\pointer:
+        \\  i32 message
+        \\interior:
+        \\  i32 message+1
+    ;
+    try expectRegions(source, &[_]u8{0}, "hi\x00" ++ "\x01\x00\x00\x00" ++ "\x02\x00\x00\x00");
+}
+
+test "the signed form and the unsigned form of a value give the same bytes" {
+    // `i8 -1` and `i8 255` are one byte and it holds the same bits. Which spelling
+    // appears is a matter of what the source said, so both are accepted.
+    try expectRegions("halt\nx:\n  i8 -1, 255", &[_]u8{0}, "\xff\xff");
+    try expectRegions("halt\nx:\n  i16 -1, 65535", &[_]u8{0}, "\xff\xff\xff\xff");
+    try expectRegions("halt\nx:\n  i32 -1", &[_]u8{0}, "\xff\xff\xff\xff");
+    // A base prefix works here as it does in an instruction operand.
+    try expectRegions("halt\nx:\n  i32 0x0a", &[_]u8{0}, "\x0a\x00\x00\x00");
+}
+
+test "a value that does not fit its width is refused" {
+    // Truncating without a word would put a number in the program that the source
+    // did not ask for.
+    try testing.expectError(
+        error.ValueOutOfRange,
+        assemble(testing.allocator, "halt\nx:\n  i8 256", null),
+    );
+    try testing.expectError(
+        error.ValueOutOfRange,
+        assemble(testing.allocator, "halt\nx:\n  i8 -129", null),
+    );
+    try testing.expectError(
+        error.ValueOutOfRange,
+        assemble(testing.allocator, "halt\nx:\n  i16 65536", null),
+    );
+    try testing.expectError(
+        error.ValueOutOfRange,
+        assemble(testing.allocator, "halt\nx:\n  i32 4294967296", null),
+    );
+    // A label whose address is past the width is the same mistake. `far` sits after
+    // 300 reserved bytes, so its address needs more than one byte to hold.
+    try testing.expectError(
+        error.ValueOutOfRange,
+        assemble(testing.allocator, "halt\nx:\n  i8 far\npad:\n  reserve 300\nfar:\n  reserve 1", null),
+    );
+}
+
+test "a data directive with no value is refused" {
+    // The label before it would take the address of the next item, which is never
+    // what the author meant.
+    try testing.expectError(
+        error.MissingOperand,
+        assemble(testing.allocator, "halt\nx:\n  i32", null),
+    );
+    // A name that no label has is not a number either. This is the error that an
+    // instruction operand gives for the same name, and a value is read the same way.
+    try testing.expectError(
+        error.InvalidCharacter,
+        assemble(testing.allocator, "halt\nx:\n  i32 missing", null),
+    );
+}
+
+test "initialized data and reserved bytes keep their order in one program" {
+    // The regions are the code, then the static data that the file holds, then the
+    // zero-filled bytes. A directive of each kind therefore lands where its region
+    // is, whatever order the source wrote them in.
+    const source =
+        \\  push counter
+        \\  push limit
+        \\  halt
+        \\counter:
+        \\  reserve 4
+        \\limit:
+        \\  i32 100
+    ;
+    // The code is 11 bytes and the data region holds the four bytes of `limit`.
+    // Therefore `limit` is at 11 and `counter`, which is in the region after it, is
+    // at 15.
+    const expected_code = [_]u8{
+        1, 15, 0, 0, 0,
+        1, 11, 0, 0, 0,
+        0,
+    };
+    try expectRegions(source, &expected_code, "\x64\x00\x00\x00");
+
+    const output = try assemble(testing.allocator, source, null);
+    defer testing.allocator.free(output);
+    const image = try container.parse(output);
+    try testing.expectEqual(@as(u32, 4), image.header.data_len);
+    try testing.expectEqual(@as(u32, 4), image.header.bss_len);
 }
 
 test "an empty source assembles to an empty program" {

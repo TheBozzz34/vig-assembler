@@ -77,10 +77,19 @@ loop:
 `load` and `store` take unsigned 32-bit data addresses. `jmp`, `jmp_zero`,
 `jmp_not_zero`, and `call` accept either a label or an explicit code offset.
 
-Three directives are available: `extern` declares a foreign import, `asciiz`
-places a NUL-terminated string in the program's static-data region, and `entry`
-names the label execution starts at. Strings are assembled into a region of their
-own, after the code, so they can be declared anywhere and are never executed.
+Six directives are available. `extern` declares a foreign import and `entry` names
+the label execution starts at. The other four describe data:
+
+| Directive | Writes |
+| --- | --- |
+| `asciiz "text"` | a NUL-terminated string |
+| `i8`, `i16`, `i32` | one or more values of that width, separated by a space or a comma |
+| `reserve N` | `N` zero bytes, as a length in the header rather than bytes of the file |
+
+A value may be a number or a label, so `i32 message` is a pointer with an initial
+value. Data is assembled into regions of its own, after the code, so it can be
+declared anywhere and is never executed. See
+[OPCODES.md](OPCODES.md#initialized-data).
 
 Assembly fails if the resulting program does not verify, for example if a jump
 lands inside another instruction, or if control can run off the end of the code

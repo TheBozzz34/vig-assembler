@@ -180,6 +180,44 @@ address space: `load 4` and `load32` with 4 on the stack read the same four byte
 Therefore the address of a global is an ordinary value, and a program can compute
 with it. That is what makes a pointer, an array and a structure possible.
 
+### Initialized data
+
+`i8`, `i16` and `i32` write values that the program can read straight away. The
+number in the directive is the width of one value, so it pairs with the load of
+the same number:
+
+```asm
+    push table
+    load32          # → 10
+    push table+8
+    load32          # → 30
+    halt
+table:
+    i32 10, 20, 30
+```
+
+A space or a comma separates values, so an array is one line. A value may also be
+a label or a label expression, which is how a pointer gets an initial value:
+
+```asm
+    push greeting
+    load32          # the address of "hi"
+    print_string
+    halt
+message:
+    asciiz "hi"
+greeting:
+    i32 message
+```
+
+The permitted range covers both the signed and the unsigned reading of the width,
+so `i8 -1` and `i8 255` are the same byte. A value outside both is refused with
+`ValueOutOfRange` rather than truncated. What a byte *means* is decided by the
+instruction that reads it: `i8 -1` gives `-1` through `load8_s` and `255` through
+`load8_u`.
+
+### Reserved data
+
 `reserve` gives a label some zero-filled bytes to work with. Those bytes are a
 length in the container header and not bytes of the file, so an array of a thousand
 integers costs nothing on disk:
@@ -280,10 +318,11 @@ Use `ret_val` to return a value and `ret` to return none.
 
 ## Program layout
 
-An assembled program has two regions: the code and the static data. Instructions
-go in the first, `asciiz` strings in the second, and the VM maps the data
-immediately after the code. A label's address is therefore its offset in
-whichever region it belongs to, plus the code length for data labels.
+An assembled program has three regions: the code, the static data, and the
+zero-filled bytes that `reserve` asks for. Instructions go in the first, `asciiz`
+strings and `i8`/`i16`/`i32` values in the second, and the VM maps each one
+immediately after the one before it. A label's address is therefore its offset in
+whichever region it belongs to, plus the length of every earlier region.
 
 Only the code region is executable. Execution stops at its end, and jump and call
 targets must point inside it, a jump to a string address is rejected before the
@@ -376,10 +415,14 @@ Unreachable bytes in the code region are not an error; they are never executed.
 
 ## Limits and errors
 
-- The data segment contains 256 signed 32-bit slots, so valid data addresses
-  are `0` through `255`. This applies to `load_at` and `store_at` too, which
-  additionally reject negative addresses rather than wrapping them. The VM
-  rejects an out-of-range `load` or `store` address at load time.
+- Guest memory is one byte-addressed space, and the reference VM gives it 64 KiB:
+  the program image, then zero-filled bytes to the end. Every data address is a
+  byte offset into it, whether it came from an instruction operand or from the
+  stack, and a negative address always faults. The VM rejects an out-of-range
+  `load` or `store` operand at load time and checks a computed address as the
+  program runs.
+- A value in `i8`, `i16` or `i32` must fit that width read as signed or as
+  unsigned, so `i8` takes `-128` through `255`.
 - The data stack has 256 slots. `call` and `ret` use a separate 128-entry call
   stack.
 - A jump or call target must point inside the code region.
