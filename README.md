@@ -5,7 +5,9 @@
 [vig-bytecode](https://github.com/TheBozzz34/vig-bytecode), which defines the instruction set, the container
 format, and the verifier.
 
-See [OPCODES.md](OPCODES.md) for the complete current instruction reference.
+See [OPCODES.md](OPCODES.md) for the complete current instruction reference, and
+[ABI.md](ABI.md) for how a C compiler targets VIG: type sizes, the calling
+convention, structs, variadics and what is deliberately out of scope.
 
 ## Usage
 

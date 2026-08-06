@@ -297,6 +297,9 @@ sub_wrap        # → -1, the bits 0xffffffff
 
 ## Call frames
 
+[ABI.md](ABI.md) says how a C compiler uses what follows: which slot a parameter is
+in, how a struct is passed, and what a variadic call looks like.
+
 `call` and `ret` on their own give a subroutine a return address and nothing else. A
 function that needs storage asks for it with `enter`:
 
@@ -494,11 +497,17 @@ The syntax is `extern local_name dll_name symbol_name [argument_type ...]`.
 Imports have zero to four arguments. Types are `i32`, `u32`, `ptr`, and `cstr`.
 Arguments are pushed left-to-right and the return value is a 32-bit integer.
 
-`ptr` and `cstr` are offsets into the loaded program, never native addresses. `0`
-becomes `NULL`; `cstr` additionally requires a NUL-terminated byte string, which
-is what `asciiz` produces. This first version supports Windows x64
-integer/pointer functions only; not callbacks, structs, floating point, output
-buffers, or 64-bit return values.
+`ptr` and `cstr` are byte addresses in guest memory, never native addresses: the VM
+translates one into a host address for the call. `0` becomes `NULL`.
+
+`ptr` may name **any byte of memory**, including one in a call frame, so a program
+can pass the address of a local and a foreign function can write into it. `cstr` is
+read to its terminator and must therefore name a byte of the **program image**, with
+the terminator inside it — memory above the image is zeros, and every address there
+would otherwise look like the end of a string.
+
+This version supports integer and pointer functions only; not callbacks, structs,
+floating point, or 64-bit return values.
 
 ## Verification
 
