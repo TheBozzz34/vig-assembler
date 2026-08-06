@@ -77,6 +77,22 @@ VM share.
 | 61 | `mul_wrap` | — | `a b → a *% b` | Multiply and wrap modulo 2^32 instead of trapping. |
 | 62 | `call_indirect` | — | `target →` | Call the code address on the stack. |
 | 63 | `jmp_indirect` | — | `target →` | Jump to the code address on the stack, saving no return offset. |
+| 64 | `fadd` | — | `a b → a + b` | Add two binary32 values. |
+| 65 | `fsub` | — | `a b → a - b` | Subtract the top binary32 value from the next. |
+| 66 | `fmul` | — | `a b → a * b` | Multiply two binary32 values. |
+| 67 | `fdiv` | — | `a b → a / b` | Divide binary32 values. A zero divisor gives an infinity or a NaN, not a trap. |
+| 68 | `fneg` | — | `a → -a` | Negate a binary32 value, which flips its sign bit and nothing else. |
+| 69 | `fsqrt` | — | `a → sqrt(a)` | The square root, which IEEE-754 specifies exactly. A negative operand gives a NaN. |
+| 70 | `feq` | — | `a b → bool` | Push 1 when a == b as binary32 values, otherwise 0. |
+| 71 | `fne` | — | `a b → bool` | Push 1 when a != b as binary32 values, otherwise 0. A NaN is unequal to everything. |
+| 72 | `flt` | — | `a b → bool` | Push 1 when a < b as binary32 values, otherwise 0. |
+| 73 | `fle` | — | `a b → bool` | Push 1 when a <= b as binary32 values, otherwise 0. |
+| 74 | `fgt` | — | `a b → bool` | Push 1 when a > b as binary32 values, otherwise 0. |
+| 75 | `fge` | — | `a b → bool` | Push 1 when a >= b as binary32 values, otherwise 0. |
+| 76 | `f2i` | — | `a → int` | Truncate a binary32 value toward zero to a signed integer. Traps if it does not fit. |
+| 77 | `f2u` | — | `a → int` | Truncate a binary32 value toward zero to an unsigned integer. Traps if it does not fit. |
+| 78 | `i2f` | — | `a → float` | Convert a signed integer to binary32, rounding to nearest. |
+| 79 | `u2f` | — | `a → float` | Convert an unsigned integer to binary32, rounding to nearest. |
 
 Bitwise instructions operate on the raw two's-complement representation of each
 `i32`. Shift and rotation counts use only their low five bits, so all counts are
@@ -295,6 +311,70 @@ push 0
 push 1
 sub_wrap        # → -1, the bits 0xffffffff
 ```
+
+## Floating point
+
+A floating-point value is one slot holding the bits of an IEEE-754 **binary32**.
+The stack says nothing about what a slot means, so the instruction decides,
+exactly as it does for a signed and an unsigned integer. `push` puts a float on
+the stack by its bit pattern, which is what a compiler emits and what the `i32`
+directive writes:
+
+```asm
+    push 1075838976     # the bits of 2.5
+    push 1082130432     # the bits of 4.0
+    fmul                # 10.0
+    f2i
+    print               # 10
+```
+
+There is no `double`. A slot is four bytes, `ret_val` returns one slot, and the
+ABI passes every variadic argument as one slot; a 64-bit float would change all
+three. See ABI.md.
+
+### These are the instructions that do not trap
+
+Every other arithmetic instruction in VIG faults on a result it cannot give:
+`add` traps on overflow, `div` traps on a zero divisor. IEEE-754 has an answer
+for all of those, so the floating-point instructions return it instead:
+
+| | |
+| --- | --- |
+| `1.0 / 0.0` | positive infinity |
+| `-1.0 / 0.0` | negative infinity |
+| `0.0 / 0.0` | NaN |
+| a product too large to hold | infinity |
+| a product too small | zero |
+| `fsqrt` of a negative | NaN |
+
+Trapping on these would mean this VM inventing a rule the format does not have.
+
+The two conversions to an integer are the exception, because there the format
+runs out: `f2i` and `f2u` truncate toward zero as a cast in C does, and a value
+the integer cannot hold — a NaN included — traps with `InvalidFloatConversion`.
+C leaves that case undefined, and a fault says so more usefully than a number
+that means nothing.
+
+### NaN
+
+A NaN compares false against everything, itself included. `fne` is therefore the
+only one of the six comparisons that is true for one, which is what C requires of
+`!=`. Each comparison leaves the integer 1 or 0, exactly as `lt` and the rest do,
+so `jmp_not_zero` reads the answer without knowing which kind of comparison made
+it.
+
+### What is deliberately missing
+
+`fsqrt` is here because IEEE-754 specifies the square root exactly: it gives the
+same bits on every host, so a program that uses it stays reproducible. `sin`,
+`cos`, `exp` and the rest are **not** specified to the last bit, and their
+results differ between one platform's maths library and another's. An opcode for
+one of those would cost the VM its reproducibility, so they belong in a library
+written in C and compiled to bytecode like any other program.
+
+There is no fused multiply-add for the same reason: `fmul` followed by `fadd`
+rounds twice, and an instruction that rounded once would give a different answer
+depending on whether the host had one.
 
 ## Call frames
 
