@@ -31,12 +31,36 @@ pub const Diagnostics = struct {
     verification: ?verify.Failure = null,
 };
 
+/// What the caller asks the assembler to do beyond assembling.
+pub const Options = struct {
+    /// Also check that the operand stack has one height at every instruction.
+    ///
+    /// This is off by default, and it is not about whether a program is safe to run:
+    /// the VM refuses an unsafe program either way. It is a check for a program that
+    /// a compiler wrote, where an unbalanced stack is a fault in the compiler and
+    /// shows up far from the instruction that caused it. Hand-written VIG that keeps
+    /// its own stack in a way the check cannot follow is still a correct program, so
+    /// the check is something a caller asks for.
+    check_stack: bool = false,
+};
+
 /// Assemble `source` into a VIG container. The verifier then makes sure that:
 ///
 /// - each instruction that the program can reach decodes;
 /// - each branch goes to the first byte of an instruction;
 /// - control does not continue past the end of the code.
 pub fn assemble(allocator: std.mem.Allocator, source: []const u8, diagnostics: ?*Diagnostics) ![]u8 {
+    return assembleWithOptions(allocator, source, .{}, diagnostics);
+}
+
+/// The same, with the checks that a caller asks for beyond the ones every program
+/// gets. See `Options`.
+pub fn assembleWithOptions(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    options: Options,
+    diagnostics: ?*Diagnostics,
+) ![]u8 {
     var labels = std.StringHashMap(Label).init(allocator);
     defer labels.deinit();
     var imports_by_name = std.StringHashMap(u8).init(allocator);
@@ -159,7 +183,7 @@ pub fn assemble(allocator: std.mem.Allocator, source: []const u8, diagnostics: ?
     }
 
     const entry_point = try resolveEntryPoint(entry_label, &labels);
-    try verifyProgram(allocator, code.items, entry_point, imports.items.len, diagnostics);
+    try verifyProgram(allocator, code.items, entry_point, imports.items, options, diagnostics);
 
     const layout: container.Layout = .{
         .imports = imports.items,
@@ -306,22 +330,53 @@ fn verifyProgram(
     allocator: std.mem.Allocator,
     code: []const u8,
     entry_point: u32,
-    import_count: usize,
+    imports: []const foreign.Import,
+    options: Options,
     diagnostics: ?*Diagnostics,
 ) !void {
     const scratch = try allocator.alloc(verify.Mark, verify.scratchSize(code.len));
     defer allocator.free(scratch);
 
-    var failure: verify.Failure = undefined;
-    verify.verify(.{
+    // The number of arguments of each import, which is what the stack check needs to
+    // know how many values a `foreign_call` takes.
+    const import_args = try allocator.alloc(u8, imports.len);
+    defer allocator.free(import_args);
+    for (imports, import_args) |import, *count| count.* = import.arg_count;
+
+    const verify_options: verify.Options = .{
         .code = code,
         .entry_point = entry_point,
-        .import_count = @intCast(import_count),
+        .import_count = @intCast(imports.len),
         // The assembler knows the length of the code, so it can refuse a `store`
         // that would write an instruction. It does not know the size of the memory
         // of the VM that will run the program, so it leaves that bound to the VM.
         .code_len = @intCast(code.len),
-    }, scratch, &failure) catch |err| {
+        .import_args = import_args,
+    };
+
+    var failure: verify.Failure = undefined;
+    verify.verify(verify_options, scratch, &failure) catch |err| {
+        if (diagnostics) |slot| slot.verification = failure;
+        return err;
+    };
+
+    if (!options.check_stack) return;
+
+    // The stack check needs its own working space, and it is not part of what makes
+    // a program safe to run. Therefore nothing is allocated for it unless the caller
+    // asked for the check.
+    const depths = try allocator.alloc(verify.Depth, code.len);
+    defer allocator.free(depths);
+    const walked = try allocator.alloc(verify.Mark, code.len);
+    defer allocator.free(walked);
+    const signature = try allocator.alloc(verify.Mark, code.len);
+    defer allocator.free(signature);
+
+    verify.checkStack(verify_options, .{
+        .depths = depths,
+        .walk = walked,
+        .signature = signature,
+    }, &failure) catch |err| {
         if (diagnostics) |slot| slot.verification = failure;
         return err;
     };
@@ -1106,4 +1161,125 @@ test "an empty source assembles to an empty program" {
     const image = try container.parse(output);
     try testing.expectEqual(@as(usize, 0), image.imageLen());
     try testing.expectEqual(@as(u32, 0), image.header.entry_point);
+}
+
+test "the stack check is something the caller asks for" {
+    // A program that leaves a value on the stack at `halt` is a correct program: the
+    // VM stops and the value goes nowhere. The check is about a program that a
+    // compiler wrote, so it is off unless the caller asks.
+    const source = "push 1\nhalt";
+
+    const plain = try assemble(testing.allocator, source, null);
+    testing.allocator.free(plain);
+
+    const checked = try assembleWithOptions(testing.allocator, source, .{ .check_stack = true }, null);
+    testing.allocator.free(checked);
+}
+
+test "the stack check finds an instruction with nothing to take" {
+    // `add` needs two values and the program gave it one. Without the check this
+    // assembles, and the VM traps at run time with no source to point at.
+    const source =
+        \\  push 1
+        \\  add
+        \\  halt
+    ;
+
+    const unchecked = try assemble(testing.allocator, source, null);
+    testing.allocator.free(unchecked);
+
+    var diagnostics: Diagnostics = .{};
+    try testing.expectError(
+        error.StackUnderflowAt,
+        assembleWithOptions(testing.allocator, source, .{ .check_stack = true }, &diagnostics),
+    );
+    // The failure names the `add`, which is the five bytes of the `push` in.
+    try testing.expectEqual(@as(usize, 5), diagnostics.verification.?.offset);
+}
+
+test "the stack check follows a call through the frame a function declares" {
+    // The function takes one argument and returns one value, so the caller is
+    // balanced. This is what a compiler emits, and it is the shape the check follows.
+    const source =
+        \\entry main
+        \\main:
+        \\  push 6
+        \\  call square
+        \\  print
+        \\  pop
+        \\  halt
+        \\square:
+        \\  enter 1 0
+        \\  load_local 0
+        \\  load_local 0
+        \\  mul
+        \\  ret_val
+    ;
+
+    const program = try assembleWithOptions(testing.allocator, source, .{ .check_stack = true }, null);
+    testing.allocator.free(program);
+}
+
+test "the stack check refuses a function that returns the wrong number of values" {
+    const source =
+        \\entry main
+        \\main:
+        \\  call broken
+        \\  pop
+        \\  halt
+        \\broken:
+        \\  enter 0 0
+        \\  push 1
+        \\  push 2
+        \\  ret_val
+    ;
+
+    try testing.expectError(
+        error.UnbalancedReturn,
+        assembleWithOptions(testing.allocator, source, .{ .check_stack = true }, null),
+    );
+}
+
+test "the stack check refuses arms of a branch that leave different heights" {
+    const source =
+        \\entry main
+        \\main:
+        \\  push 1
+        \\  jmp_zero done
+        \\  push 7
+        \\done:
+        \\  halt
+    ;
+
+    try testing.expectError(
+        error.InconsistentStackDepth,
+        assembleWithOptions(testing.allocator, source, .{ .check_stack = true }, null),
+    );
+}
+
+test "the stack check cannot follow a call to a function with no frame" {
+    // The older calling convention keeps its own stack and declares no arguments, so
+    // the height after the call is not something the check can work out. Such a
+    // program is still correct and still assembles without the check.
+    const source =
+        \\entry main
+        \\main:
+        \\  push 21
+        \\  call double
+        \\  print
+        \\  pop
+        \\  halt
+        \\double:
+        \\  push 2
+        \\  mul
+        \\  ret
+    ;
+
+    const program = try assemble(testing.allocator, source, null);
+    testing.allocator.free(program);
+
+    try testing.expectError(
+        error.UndeclaredCallTarget,
+        assembleWithOptions(testing.allocator, source, .{ .check_stack = true }, null),
+    );
 }

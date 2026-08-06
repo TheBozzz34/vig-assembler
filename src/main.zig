@@ -2,9 +2,18 @@ const std = @import("std");
 const assembler = @import("assembler.zig");
 
 pub fn main(init: std.process.Init) !void {
-    const args = try init.minimal.args.toSlice(init.arena.allocator());
+    var args = try init.minimal.args.toSlice(init.arena.allocator());
+
+    // `--check-stack` asks for the operand-stack check as well. It is a separate
+    // flag because a correct hand-written program can fail it. See `Options`.
+    var options: assembler.Options = .{};
+    if (args.len > 1 and std.mem.eql(u8, args[args.len - 1], "--check-stack")) {
+        options.check_stack = true;
+        args = args[0 .. args.len - 1];
+    }
+
     if (args.len != 4 or !std.mem.eql(u8, args[2], "-o")) {
-        std.debug.print("Usage: vigasm <source.vigas> -o <output.vig>\n", .{});
+        std.debug.print("Usage: vigasm <source.vigas> -o <output.vig> [--check-stack]\n", .{});
         return error.InvalidArguments;
     }
 
@@ -12,7 +21,7 @@ pub fn main(init: std.process.Init) !void {
     defer init.gpa.free(source);
 
     var diagnostics: assembler.Diagnostics = .{};
-    const program = assembler.assemble(init.gpa, source, &diagnostics) catch |err| {
+    const program = assembler.assembleWithOptions(init.gpa, source, options, &diagnostics) catch |err| {
         if (diagnostics.verification) |failure| {
             std.debug.print(
                 "Verification failed at code offset {d}: {s}\n",

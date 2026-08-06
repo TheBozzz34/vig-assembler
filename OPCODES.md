@@ -511,6 +511,36 @@ report the code offset that failed.
 
 Unreachable bytes in the code region are not an error; they are never executed.
 
+### The stack check
+
+`vigasm --check-stack` asks one more question: does the program keep the operand
+stack in the shape its own code expects? It works out the height of the stack at
+every reachable instruction and reports the first place the arithmetic does not add
+up — an instruction with less on the stack than it takes, two paths that meet at
+different heights, or a function that returns a different number of values than its
+`ret_val` claims.
+
+```
+$ vigasm broken.vigas -o broken.vig --check-stack
+Verification failed at code offset 5: StackUnderflowAt
+```
+
+This is not about safety. The VM refuses an unsafe program either way, and a
+program that fails this check may run perfectly well. It is for a program that a
+compiler wrote, where an unbalanced stack is a fault in the compiler that otherwise
+shows up as a trap somewhere far from the instruction that caused it.
+
+The check follows a `call` through the frame that the called function declares: the
+`enter` says how many arguments it takes, and its return instruction says whether it
+leaves a value. Two things it cannot follow:
+
+- **A function with no `enter`.** It does not say how many values it takes, so the
+  height after a call to it is unknown. This is `UndeclaredCallTarget`, and it is
+  why the check is off by default: the older calling convention is written that way,
+  and those programs are correct.
+- **`call_indirect`.** The target is a value, so no read of the code says which
+  function it is. The check stops on that path and continues everywhere else.
+
 ## Limits and errors
 
 - Guest memory is one byte-addressed space, and the reference VM gives it 64 KiB:

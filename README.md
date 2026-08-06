@@ -105,6 +105,13 @@ lands inside another instruction, or if control can run off the end of the code
 instead of reaching `halt` or `ret`. The failure names the code offset. See
 [OPCODES.md](OPCODES.md#verification).
 
+`--check-stack` adds a check that the operand stack has one height at every
+instruction, which is what finds an unbalanced expression or a branch whose two arms
+leave different things behind. It is off by default because a correct program can
+fail it — a function written in the older convention declares no `enter`, and the
+check cannot follow a call to one. See
+[OPCODES.md](OPCODES.md#the-stack-check).
+
 `load_at` and `store_at` take no operand and read the data address from the stack
 instead, which is how arrays and computed offsets are written. See
 [OPCODES.md](OPCODES.md#indirect-data-access) and `examples\array_sum.vigas`,
