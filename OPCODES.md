@@ -543,16 +543,18 @@ leaves a value. Two things it cannot follow:
 
 ## Limits and errors
 
-- Guest memory is one byte-addressed space, and the reference VM gives it 64 KiB:
-  the program image, then zero-filled bytes to the end. Every data address is a
-  byte offset into it, whether it came from an instruction operand or from the
-  stack, and a negative address always faults. The VM rejects an out-of-range
-  `load` or `store` operand at load time and checks a computed address as the
-  program runs.
+- Guest memory is one byte-addressed space: the program image, then zero-filled
+  bytes to the end. Every data address is a byte offset into it, whether it came
+  from an instruction operand or from the stack, and a negative address always
+  faults. The VM rejects an out-of-range `load` or `store` operand at load time and
+  checks a computed address as the program runs.
 - A value in `i8`, `i16` or `i32` must fit that width read as signed or as
   unsigned, so `i8` takes `-128` through `255`.
-- The data stack has 256 slots. `call` and `ret` use a separate 128-entry call
-  stack.
+- **The size of memory and of the two stacks belongs to the VM and not to the
+  program.** `vig` gives 1 MiB of memory, 1024 operand slots and 256 call frames by
+  default, and `--memory` changes the first. A program that runs in one VM can
+  therefore exhaust another, and an assembled program says nothing about which. The
+  ceiling on memory is 2 GiB: a pointer is an `i32` on the operand stack.
 - A jump or call target must point inside the code region.
 - Arithmetic traps on signed overflow. `div` and `mod` also trap on division by
   zero. `read_i32` also uses `IntegerOverflow` for an out-of-range input value.
