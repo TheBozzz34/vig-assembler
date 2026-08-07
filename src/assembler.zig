@@ -4,8 +4,23 @@ const bytecode = @import("vig_bytecode");
 const container = bytecode.container;
 const encode = bytecode.encode;
 const foreign = bytecode.foreign;
+const object = bytecode.object;
 const verify = bytecode.verify;
 const OpCode = bytecode.OpCode;
+const OperandKind = bytecode.OperandKind;
+
+/// Which file the assembler is making.
+///
+/// The two differ in what a name means. In a program every label has a final
+/// address, so a name becomes that address and the verifier can follow every
+/// branch. In an object nothing has a final address yet: the sections will be
+/// placed among the sections of other objects, so a name becomes a relocation
+/// and the value in the bytes is zero until the linker fills it in.
+///
+/// That is also why an object is not verified here. A `call` to a function in
+/// another object cannot be followed, and the operand of one in this object is
+/// still zero. The linker verifies once, after the last relocation.
+const Output = enum { program, object };
 
 /// The region of the program that a label points into.
 ///
@@ -22,6 +37,90 @@ const Region = enum { code, data, bss };
 const Label = struct {
     region: Region,
     offset: usize,
+};
+
+/// A symbol while the assembler is still measuring. It becomes an
+/// `object.Symbol` once every region has its final length.
+const PendingSymbol = struct {
+    name: []const u8,
+    binding: object.Binding,
+    kind: object.SymbolKind,
+    section: object.Section,
+    /// How far into `section` the symbol sits. A label learns this when it is
+    /// placed; an undefined or common symbol never has one.
+    offset: usize = 0,
+    size: u32 = 0,
+    alignment: u32 = 1,
+};
+
+/// Every name that an object offers, needs, or defines for itself.
+///
+/// The order is the order of the source, because a relocation names its symbol
+/// by index and a linker must get the same object from the same input every
+/// time. A hash map would not promise that.
+const Symbols = struct {
+    allocator: std.mem.Allocator,
+    entries: std.ArrayList(PendingSymbol) = .empty,
+    index: std.StringHashMap(u32),
+
+    fn init(allocator: std.mem.Allocator) Symbols {
+        return .{ .allocator = allocator, .index = .init(allocator) };
+    }
+
+    fn deinit(self: *Symbols) void {
+        self.entries.deinit(self.allocator);
+        self.index.deinit();
+    }
+
+    /// Record a symbol and give its index. A name belongs to one symbol: a label
+    /// that repeats a name already declared `extern_symbol` or `common` is a
+    /// mistake, and the linker could not tell which one a relocation meant.
+    fn add(self: *Symbols, symbol: PendingSymbol) !u32 {
+        if (self.index.contains(symbol.name)) return error.DuplicateSymbol;
+        const position: u32 = @intCast(self.entries.items.len);
+        try self.entries.append(self.allocator, symbol);
+        try self.index.put(symbol.name, position);
+        return position;
+    }
+
+    fn find(self: *const Symbols, name: []const u8) ?u32 {
+        return self.index.get(name);
+    }
+
+    /// Offer a symbol this object defines to every other object.
+    ///
+    /// A `global` directive may come before or after the label it names, so this
+    /// runs once the whole source has been read. Only a definition can be
+    /// offered: a name this object expects from elsewhere has nothing to give.
+    fn markGlobal(self: *Symbols, name: []const u8) !void {
+        const position = self.find(name) orelse return error.UnknownGlobalSymbol;
+        const entry = &self.entries.items[position];
+        switch (entry.binding) {
+            .local => entry.binding = .global,
+            .global => return error.DuplicateGlobal,
+            .undefined, .common => return error.GlobalWithoutDefinition,
+        }
+    }
+};
+
+/// A relocation that still needs a home. Reading an operand says what kind of
+/// relocation it needs and which symbol it names; only the caller knows where in
+/// the section the bytes will land.
+const PendingRelocation = struct {
+    relocation_type: object.RelocationType,
+    target: u32,
+    addend: i32 = 0,
+};
+
+/// What a name in an operand or a data value resolved to.
+const Reference = struct {
+    /// The value to write into the bytes now. It is zero when a relocation will
+    /// supply the address instead.
+    value: i64,
+    /// The symbol a relocation must name, when the assembler is making an object
+    /// and the text named something rather than counting it.
+    symbol: ?u32 = null,
+    addend: i32 = 0,
 };
 
 /// The output of the assembler that is not a program. At this time it holds the
@@ -61,6 +160,28 @@ pub fn assembleWithOptions(
     options: Options,
     diagnostics: ?*Diagnostics,
 ) ![]u8 {
+    return build(allocator, source, .program, options, diagnostics);
+}
+
+/// Assemble `source` into a relocatable object for the linker.
+///
+/// Every reference to a name becomes a relocation, and the `global`,
+/// `extern_symbol` and `common` directives say how each name takes part in the
+/// link. There is no entry point, because which function starts the program is a
+/// decision of the link: the linker finds it by name.
+///
+/// Nothing here is verified. See `Output`.
+pub fn assembleObject(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    return build(allocator, source, .object, .{}, null);
+}
+
+fn build(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    output: Output,
+    options: Options,
+    diagnostics: ?*Diagnostics,
+) ![]u8 {
     var labels = std.StringHashMap(Label).init(allocator);
     defer labels.deinit();
     var imports_by_name = std.StringHashMap(u8).init(allocator);
@@ -73,6 +194,16 @@ pub fn assembleWithOptions(
     // label until it knows the address.
     var pending_labels = std.ArrayList([]const u8).empty;
     defer pending_labels.deinit(allocator);
+
+    // The linkage of an object. A program has none of this: it is complete, so
+    // every name in it is already an address.
+    var symbols: Symbols = .init(allocator);
+    defer symbols.deinit();
+    var exported = std.ArrayList([]const u8).empty;
+    defer exported.deinit(allocator);
+    var relocations = std.ArrayList(object.Relocation).empty;
+    defer relocations.deinit(allocator);
+    const symbol_table: ?*Symbols = if (output == .object) &symbols else null;
 
     var code_len: usize = 0;
     var data_len: usize = 0;
@@ -103,13 +234,55 @@ pub fn assembleWithOptions(
         }
 
         if (isDirective(line, "entry")) {
+            // An object has no entry point to name. See `assembleObject`.
+            if (output == .object) return error.EntryPointInObject;
             if (entry_label != null) return error.DuplicateEntryPoint;
             entry_label = try parseEntry(line);
             continue;
         }
 
+        // The three directives that describe a link. None of them means anything
+        // in a complete program, where there is nothing left to link against, so
+        // a source that uses one is refused rather than quietly assembled into a
+        // program that could not do what it says.
+        if (isDirective(line, "global")) {
+            if (symbol_table == null) return error.LinkageDirectiveInProgram;
+            try exported.append(allocator, try parseGlobal(line));
+            continue;
+        }
+
+        if (isDirective(line, "extern_symbol")) {
+            if (symbol_table) |table| {
+                const declaration = try parseExternSymbol(line);
+                _ = try table.add(.{
+                    .name = declaration.name,
+                    .binding = .undefined,
+                    .kind = declaration.kind,
+                    .section = .none,
+                });
+                continue;
+            }
+            return error.LinkageDirectiveInProgram;
+        }
+
+        if (isDirective(line, "common")) {
+            if (symbol_table) |table| {
+                const declaration = try parseCommon(line);
+                _ = try table.add(.{
+                    .name = declaration.name,
+                    .binding = .common,
+                    .kind = .object,
+                    .section = .none,
+                    .size = declaration.size,
+                    .alignment = declaration.alignment,
+                });
+                continue;
+            }
+            return error.LinkageDirectiveInProgram;
+        }
+
         if (isDirective(line, "asciiz")) {
-            try place(&labels, &pending_labels, .data, data_len);
+            try place(&labels, symbol_table, &pending_labels, .data, data_len);
             data_len += (try parseAsciiz(line)).len + 1;
             continue;
         }
@@ -119,22 +292,25 @@ pub fn assembleWithOptions(
         // knows the size of the region even though a value can name a label that
         // only pass two can resolve.
         if (dataWidth(line)) |width| {
-            try place(&labels, &pending_labels, .data, data_len);
+            try place(&labels, symbol_table, &pending_labels, .data, data_len);
             data_len += width * try countValues(line);
             continue;
         }
 
         if (isDirective(line, "reserve")) {
-            try place(&labels, &pending_labels, .bss, bss_len);
+            try place(&labels, symbol_table, &pending_labels, .bss, bss_len);
             bss_len += try parseReserve(line);
             continue;
         }
 
-        try place(&labels, &pending_labels, .code, code_len);
+        try place(&labels, symbol_table, &pending_labels, .code, code_len);
         code_len += (try parseInstruction(line)).size();
     }
     // A label after the last instruction has the address of the end of the code.
-    try place(&labels, &pending_labels, .code, code_len);
+    try place(&labels, symbol_table, &pending_labels, .code, code_len);
+
+    // Every label is a symbol by now, whichever order the source put the two in.
+    for (exported.items) |name| try symbols.markGlobal(name);
 
     // Pass two: write the output. Each region has exactly the size from pass one.
     var code = try std.ArrayList(u8).initCapacity(allocator, code_len);
@@ -148,6 +324,7 @@ pub fn assembleWithOptions(
     const scope: Scope = .{
         .labels = &labels,
         .imports_by_name = &imports_by_name,
+        .symbols = symbol_table,
         .code_len = code_len,
         .data_len = data_len,
     };
@@ -157,6 +334,12 @@ pub fn assembleWithOptions(
         const line = meaningfulLine(raw_line);
         if (line.len == 0 or labelName(line) != null) continue;
         if (isDirective(line, "extern") or isDirective(line, "entry")) continue;
+        // Pass one read the whole of these, and none of them writes a byte.
+        if (isDirective(line, "global") or isDirective(line, "extern_symbol") or
+            isDirective(line, "common"))
+        {
+            continue;
+        }
 
         if (isDirective(line, "asciiz")) {
             try data.appendSlice(allocator, try parseAsciiz(line));
@@ -165,7 +348,7 @@ pub fn assembleWithOptions(
         }
 
         if (dataWidth(line)) |width| {
-            try appendValues(allocator, &data, line, width, scope);
+            try appendValues(allocator, &data, &relocations, line, width, scope);
             continue;
         }
 
@@ -175,11 +358,35 @@ pub fn assembleWithOptions(
 
         var tokens = std.mem.tokenizeAny(u8, line, " \t,");
         const instruction = try opCodeFor(tokens.next() orelse unreachable);
-        const operand = try parseOperand(instruction, &tokens, scope);
+        var pending: ?PendingRelocation = null;
+        const operand = try parseOperand(instruction, &tokens, scope, &pending);
+
+        // Every relocatable operand is the byte after the opcode, so the place to
+        // patch is known before the instruction is written.
+        if (pending) |relocation| {
+            try relocations.append(allocator, .{
+                .relocation_type = relocation.relocation_type,
+                .section = .code,
+                .offset = std.math.cast(u32, code.items.len + 1) orelse
+                    return error.AddressOutOfRange,
+                .target = relocation.target,
+                .addend = relocation.addend,
+            });
+        }
 
         var buffer: [8]u8 = undefined;
         const size = try encode.encode(&buffer, instruction, operand);
         try code.appendSlice(allocator, buffer[0..size]);
+    }
+
+    if (output == .object) {
+        return finishObject(allocator, &symbols, .{
+            .imports = imports.items,
+            .relocations = relocations.items,
+            .code = code.items,
+            .data = data.items,
+            .bss_len = std.math.cast(u32, bss_len) orelse return error.AddressOutOfRange,
+        });
     }
 
     const entry_point = try resolveEntryPoint(entry_label, &labels);
@@ -192,20 +399,41 @@ pub fn assembleWithOptions(
         .bss_len = std.math.cast(u32, bss_len) orelse return error.AddressOutOfRange,
         .entry_point = entry_point,
     };
-    const output = try allocator.alloc(u8, try container.encodedSize(layout));
-    errdefer allocator.free(output);
-    std.debug.assert(try container.write(layout, output) == output.len);
-    return output;
+    const file = try allocator.alloc(u8, try container.encodedSize(layout));
+    errdefer allocator.free(file);
+    std.debug.assert(try container.write(layout, file) == file.len);
+    return file;
 }
 
 /// Give the address to each label that waits for the next item in the output.
+///
+/// In an object each label is also a symbol, and it becomes one here rather than
+/// where it was written, because this is where it learns which region it belongs
+/// to. A label in the code names a function and one in either data region names
+/// an object, which is the distinction the linker checks a relocation against.
 fn place(
     labels: *std.StringHashMap(Label),
+    symbols: ?*Symbols,
     pending: *std.ArrayList([]const u8),
     region: Region,
     offset: usize,
 ) !void {
-    for (pending.items) |name| try labels.put(name, .{ .region = region, .offset = offset });
+    for (pending.items) |name| {
+        try labels.put(name, .{ .region = region, .offset = offset });
+        if (symbols) |table| {
+            _ = try table.add(.{
+                .name = name,
+                .binding = .local,
+                .kind = if (region == .code) .function else .object,
+                .section = switch (region) {
+                    .code => .code,
+                    .data => .data,
+                    .bss => .bss,
+                },
+                .offset = offset,
+            });
+        }
+    }
     pending.clearRetainingCapacity();
 }
 
@@ -219,6 +447,9 @@ fn containsPending(pending: []const []const u8, name: []const u8) bool {
 const Scope = struct {
     labels: *const std.StringHashMap(Label),
     imports_by_name: *const std.StringHashMap(u8),
+    /// The symbol table, when the assembler is making an object. Its presence is
+    /// what turns a reference to a name into a relocation rather than an address.
+    symbols: ?*const Symbols = null,
     code_len: usize,
     data_len: usize,
 
@@ -232,12 +463,20 @@ const Scope = struct {
             .bss => self.code_len + self.data_len + label.offset,
         };
     }
+
+    /// Whether an operand that names this exactly would resolve. An object knows
+    /// names its own source never defines, so it asks the symbol table.
+    fn knows(self: Scope, name: []const u8) bool {
+        if (self.symbols) |table| return table.find(name) != null;
+        return self.labels.contains(name);
+    }
 };
 
 fn parseOperand(
     instruction: OpCode,
     tokens: *std.mem.TokenIterator(u8, .any),
     scope: Scope,
+    pending: *?PendingRelocation,
 ) !encode.Operand {
     const kind = instruction.operandKind();
     if (kind == .none) {
@@ -263,19 +502,50 @@ fn parseOperand(
     // An import is named and never calculated, so it does not go through the
     // expression parser.
     if (kind == .import_index) {
-        return .{ .import_index = scope.imports_by_name.get(text) orelse return error.UnknownForeignImport };
+        const index = scope.imports_by_name.get(text) orelse return error.UnknownForeignImport;
+        // The index here counts this object's own imports. The linker merges the
+        // tables of every object it reads, so the index changes and the operand
+        // has to be marked for it. See `object.RelocationType.foreign_import8`.
+        if (scope.symbols != null) {
+            pending.* = .{ .relocation_type = .foreign_import8, .target = index };
+        }
+        return .{ .import_index = index };
     }
     // A frame slot is an index and never an address, so no label can name one.
     if (kind == .local_index) {
         return .{ .local_index = try std.fmt.parseInt(u16, text, 0) };
     }
 
-    const value = try resolveAddress(text, scope, kind.acceptsLabel());
+    const reference = try resolveReference(text, scope, kind.acceptsLabel());
+    if (reference.symbol) |target| {
+        pending.* = .{
+            .relocation_type = relocationTypeFor(kind),
+            .target = target,
+            .addend = reference.addend,
+        };
+    }
+    const value = reference.value;
     return switch (kind) {
         .none, .import_index, .local_index, .frame_shape => unreachable,
         .signed => .{ .signed = std.math.cast(i32, value) orelse return error.AddressOutOfRange },
         .code_target => .{ .code_target = std.math.cast(u32, value) orelse return error.AddressOutOfRange },
         .data_address => .{ .data_address = std.math.cast(u32, value) orelse return error.AddressOutOfRange },
+    };
+}
+
+/// The relocation that a reference in an operand of this kind needs.
+///
+/// `call` and `jmp` name a place to execute and `load` and `store` name a place
+/// to read, so the linker can check that what it resolved is that kind of thing
+/// and lands in that region. `push` names neither: its value is an address the
+/// program will do something with later, and one past the end of an array is as
+/// reasonable a thing to push as the array itself. Therefore it takes the
+/// relocation that carries no such claim.
+fn relocationTypeFor(kind: OperandKind) object.RelocationType {
+    return switch (kind) {
+        .code_target => .code_target32,
+        .data_address => .data_address32,
+        else => .guest_address32,
     };
 }
 
@@ -290,31 +560,100 @@ fn parseOperand(
 /// The expression carries no space, so `numbers+8` is one operand and `numbers + 8`
 /// is three. A join of the tokens would make `push 1 2` mean `push 12`, and that
 /// line is a mistake that the assembler must report.
-fn resolveAddress(text: []const u8, scope: Scope, accepts_label: bool) !i64 {
-    // The whole text is tried as a label first. Therefore a label whose name holds a
-    // `-` still resolves, and only a name that no label has becomes an expression.
-    if (accepts_label) {
-        if (scope.address(text)) |address| return @intCast(address);
+fn resolveReference(text: []const u8, scope: Scope, accepts_label: bool) !Reference {
+    const parts = try splitAddress(text, scope, accepts_label);
+    const name = parts.name orelse return .{ .value = parts.offset };
+
+    // In an object no name has an address yet. The value stays zero and the
+    // constant travels in the relocation, which is what its addend is for.
+    if (scope.symbols) |table| {
+        return .{
+            .value = 0,
+            .symbol = table.find(name) orelse return error.UnknownLabel,
+            .addend = std.math.cast(i32, parts.offset) orelse return error.AddressOutOfRange,
+        };
     }
+
+    const base = scope.address(name) orelse return error.UnknownLabel;
+    const total = @as(i64, @intCast(base)) + parts.offset;
+    if (total < 0) return error.AddressOutOfRange;
+    return .{ .value = total };
+}
+
+/// The two parts of an address operand: the name it may begin with, and the
+/// constant to add to that name. `offset` alone is a plain number.
+const AddressText = struct {
+    name: ?[]const u8,
+    offset: i64,
+};
+
+fn splitAddress(text: []const u8, scope: Scope, accepts_label: bool) !AddressText {
+    // The whole text is tried as a name first. Therefore a label whose name holds a
+    // `-` still resolves, and only a name that nothing declares becomes an expression.
+    if (accepts_label and scope.knows(text)) return .{ .name = text, .offset = 0 };
 
     const split = std.mem.indexOfAny(u8, text, "+-");
     // A sign at the start belongs to the number and does not make an expression.
-    if (split == null or split.? == 0) return std.fmt.parseInt(i64, text, 0);
+    if (split == null or split.? == 0) {
+        return .{ .name = null, .offset = try std.fmt.parseInt(i64, text, 0) };
+    }
     if (!accepts_label) return error.InvalidCharacter;
 
-    const name = text[0..split.?];
     const offset_text = text[split.? + 1 ..];
     if (offset_text.len == 0) return error.MissingOperand;
+    const magnitude = try std.fmt.parseInt(i64, offset_text, 0);
 
-    const base = scope.address(name) orelse return error.UnknownLabel;
-    const offset = try std.fmt.parseInt(i64, offset_text, 0);
-    const total = if (text[split.?] == '+')
-        @as(i64, @intCast(base)) + offset
-    else
-        @as(i64, @intCast(base)) - offset;
+    return .{
+        .name = text[0..split.?],
+        .offset = if (text[split.?] == '+') magnitude else -magnitude,
+    };
+}
 
-    if (total < 0) return error.AddressOutOfRange;
-    return total;
+/// The parts of an object that pass two produced, other than its symbols.
+const ObjectContents = struct {
+    imports: []const foreign.Import,
+    relocations: []const object.Relocation,
+    code: []const u8,
+    data: []const u8,
+    bss_len: u32,
+};
+
+/// Turn the measured symbols into the form the object format holds, and write it.
+///
+/// A label carries no size. The linker uses a size only to decide how much space
+/// a common symbol needs, and a label is not a common symbol: it is a place in a
+/// region whose length the header already gives.
+fn finishObject(
+    allocator: std.mem.Allocator,
+    symbols: *const Symbols,
+    contents: ObjectContents,
+) ![]u8 {
+    const final = try allocator.alloc(object.Symbol, symbols.entries.items.len);
+    defer allocator.free(final);
+    for (symbols.entries.items, final) |entry, *symbol| {
+        symbol.* = .{
+            .name = entry.name,
+            .binding = entry.binding,
+            .kind = entry.kind,
+            .section = entry.section,
+            .offset = std.math.cast(u32, entry.offset) orelse return error.AddressOutOfRange,
+            .size = entry.size,
+            .alignment = entry.alignment,
+        };
+    }
+
+    const layout: object.Layout = .{
+        .imports = contents.imports,
+        .symbols = final,
+        .relocations = contents.relocations,
+        .code = contents.code,
+        .data = contents.data,
+        .bss_len = contents.bss_len,
+    };
+    const output = try allocator.alloc(u8, try object.encodedSize(layout));
+    errdefer allocator.free(output);
+    std.debug.assert(try object.write(layout, output) == output.len);
+    return output;
 }
 
 fn resolveEntryPoint(entry_label: ?[]const u8, labels: *const std.StringHashMap(Label)) !u32 {
@@ -424,6 +763,62 @@ fn parseExtern(line: []const u8) !struct { name: []const u8, import: foreign.Imp
     return .{ .name = name, .import = import };
 }
 
+/// `global name` offers a name this object defines to every other object. It may
+/// come before or after the label it names, because a compiler writes the label
+/// where the definition is and the linkage wherever it is convenient.
+fn parseGlobal(line: []const u8) ![]const u8 {
+    var tokens = std.mem.tokenizeAny(u8, line, " \t,");
+    _ = tokens.next(); // global
+    const name = tokens.next() orelse return error.MissingOperand;
+    if (tokens.next() != null) return error.UnexpectedOperand;
+    return name;
+}
+
+/// `extern_symbol name [function|object]` names something this object uses and
+/// another one defines.
+///
+/// The kind is what the linker checks a relocation against: a `call` must reach a
+/// function and a `load` must reach an object. It defaults to `function`, which
+/// is what a bare `call` to a name from elsewhere means.
+fn parseExternSymbol(line: []const u8) !struct { name: []const u8, kind: object.SymbolKind } {
+    var tokens = std.mem.tokenizeAny(u8, line, " \t,");
+    _ = tokens.next(); // extern_symbol
+    const name = tokens.next() orelse return error.MissingOperand;
+
+    const kind: object.SymbolKind = if (tokens.next()) |text|
+        std.meta.stringToEnum(object.SymbolKind, text) orelse return error.UnknownSymbolKind
+    else
+        .function;
+    if (tokens.next() != null) return error.UnexpectedOperand;
+    return .{ .name = name, .kind = kind };
+}
+
+/// `common name size [alignment]` asks the linker for space rather than defining
+/// it here.
+///
+/// Several objects may ask for the same name, and the linker makes one region as
+/// large and as strongly aligned as the largest request. This is what C's
+/// tentative definition -- `int counter;` at file scope, with no initialiser --
+/// becomes: two translation units that both declare it get one variable.
+fn parseCommon(
+    line: []const u8,
+) !struct { name: []const u8, size: u32, alignment: u32 } {
+    var tokens = std.mem.tokenizeAny(u8, line, " \t,");
+    _ = tokens.next(); // common
+    const name = tokens.next() orelse return error.MissingOperand;
+    const size_text = tokens.next() orelse return error.MissingOperand;
+
+    const size = try std.fmt.parseInt(u32, size_text, 0);
+    // A request for no space would read back as a name that nothing defines.
+    if (size == 0) return error.InvalidCommonSize;
+
+    const alignment: u32 = if (tokens.next()) |text| try std.fmt.parseInt(u32, text, 0) else 1;
+    if (alignment == 0 or !std.math.isPowerOfTwo(alignment)) return error.InvalidAlignment;
+    if (tokens.next() != null) return error.UnexpectedOperand;
+
+    return .{ .name = name, .size = size, .alignment = alignment };
+}
+
 fn parseEntry(line: []const u8) ![]const u8 {
     var tokens = std.mem.tokenizeAny(u8, line, " \t,");
     _ = tokens.next(); // entry
@@ -490,6 +885,7 @@ fn countValues(line: []const u8) !usize {
 fn appendValues(
     allocator: std.mem.Allocator,
     data: *std.ArrayList(u8),
+    relocations: *std.ArrayList(object.Relocation),
     line: []const u8,
     width: usize,
     scope: Scope,
@@ -498,8 +894,25 @@ fn appendValues(
     _ = tokens.next(); // the directive
 
     while (tokens.next()) |text| {
+        const reference = try resolveReference(text, scope, true);
+        if (reference.symbol) |target| {
+            // An address is four bytes and there is no narrower relocation,
+            // because a narrower one could not hold the answer. `i8 label` in a
+            // program is a truncation the author can see; in an object nobody
+            // could see it, so it is refused instead.
+            if (width != 4) return error.RelocationWidthMismatch;
+            try relocations.append(allocator, .{
+                .relocation_type = .guest_address32,
+                .section = .data,
+                .offset = std.math.cast(u32, data.items.len) orelse
+                    return error.AddressOutOfRange,
+                .target = target,
+                .addend = reference.addend,
+            });
+        }
+
         var buffer: [4]u8 = undefined;
-        try writeValue(&buffer, try resolveAddress(text, scope, true), width);
+        try writeValue(&buffer, reference.value, width);
         try data.appendSlice(allocator, buffer[0..width]);
     }
 }
@@ -1282,4 +1695,245 @@ test "the stack check cannot follow a call to a function with no frame" {
         error.UndeclaredCallTarget,
         assembleWithOptions(testing.allocator, source, .{ .check_stack = true }, null),
     );
+}
+
+// Objects ---------------------------------------------------------------------
+
+fn collectSymbols(image: object.Image, buffer: []object.Symbol) ![]object.Symbol {
+    var iterator = image.symbolIterator();
+    var count: usize = 0;
+    while (try iterator.next()) |symbol| : (count += 1) buffer[count] = symbol;
+    return buffer[0..count];
+}
+
+fn collectRelocations(image: object.Image, buffer: []object.Relocation) ![]object.Relocation {
+    var iterator = image.relocationIterator();
+    var count: usize = 0;
+    while (try iterator.next()) |relocation| : (count += 1) buffer[count] = relocation;
+    return buffer[0..count];
+}
+
+test "an object records what it defines, what it needs, and where each is used" {
+    const bytes = try assembleObject(testing.allocator,
+        \\global main
+        \\extern_symbol helper
+        \\extern_symbol total object
+        \\common counter 4 4
+        \\main:
+        \\  call helper
+        \\  pop
+        \\  load total
+        \\  pop
+        \\  push message
+        \\  pop
+        \\  ret
+        \\message:
+        \\  asciiz "hi"
+    );
+    defer testing.allocator.free(bytes);
+
+    const image = try object.parse(bytes);
+    try testing.expectEqual(@as(u32, 19), @as(u32, @intCast(image.code.len)));
+    try testing.expectEqualStrings("hi\x00", image.data);
+    try testing.expectEqual(@as(u32, 0), image.bss_len);
+
+    // The order is the order of the source: two declarations, a request for
+    // space, then each label as the region it belongs to becomes known.
+    var symbol_buffer: [8]object.Symbol = undefined;
+    const symbols = try collectSymbols(image, &symbol_buffer);
+    try testing.expectEqual(@as(usize, 5), symbols.len);
+
+    try testing.expectEqualStrings("helper", symbols[0].name);
+    try testing.expectEqual(object.Binding.undefined, symbols[0].binding);
+    try testing.expectEqual(object.SymbolKind.function, symbols[0].kind);
+    try testing.expectEqual(object.Section.none, symbols[0].section);
+
+    try testing.expectEqualStrings("total", symbols[1].name);
+    try testing.expectEqual(object.SymbolKind.object, symbols[1].kind);
+
+    try testing.expectEqualStrings("counter", symbols[2].name);
+    try testing.expectEqual(object.Binding.common, symbols[2].binding);
+    try testing.expectEqual(@as(u32, 4), symbols[2].size);
+    try testing.expectEqual(@as(u32, 4), symbols[2].alignment);
+
+    // A label in the code names a function, and `global` offered it onward.
+    try testing.expectEqualStrings("main", symbols[3].name);
+    try testing.expectEqual(object.Binding.global, symbols[3].binding);
+    try testing.expectEqual(object.SymbolKind.function, symbols[3].kind);
+    try testing.expectEqual(object.Section.code, symbols[3].section);
+    try testing.expectEqual(@as(u32, 0), symbols[3].offset);
+
+    // A label in the data names an object, and nothing offered it, so it stays
+    // this object's own.
+    try testing.expectEqualStrings("message", symbols[4].name);
+    try testing.expectEqual(object.Binding.local, symbols[4].binding);
+    try testing.expectEqual(object.SymbolKind.object, symbols[4].kind);
+    try testing.expectEqual(object.Section.data, symbols[4].section);
+
+    // Each operand that named something is zero in the bytes and a relocation
+    // beside them. The instruction says which check the linker may apply.
+    var relocation_buffer: [8]object.Relocation = undefined;
+    const relocations = try collectRelocations(image, &relocation_buffer);
+    try testing.expectEqual(@as(usize, 3), relocations.len);
+
+    try testing.expectEqual(object.RelocationType.code_target32, relocations[0].relocation_type);
+    try testing.expectEqual(@as(u32, 1), relocations[0].offset);
+    try testing.expectEqual(@as(u32, 0), relocations[0].target);
+
+    try testing.expectEqual(object.RelocationType.data_address32, relocations[1].relocation_type);
+    try testing.expectEqual(@as(u32, 7), relocations[1].offset);
+    try testing.expectEqual(@as(u32, 1), relocations[1].target);
+
+    // `push` names a value rather than a place, so it carries no claim about
+    // what the address is for.
+    try testing.expectEqual(object.RelocationType.guest_address32, relocations[2].relocation_type);
+    try testing.expectEqual(@as(u32, 13), relocations[2].offset);
+    try testing.expectEqual(@as(u32, 4), relocations[2].target);
+
+    for (relocations) |relocation| {
+        const operand = image.code[relocation.offset..][0..4];
+        try testing.expectEqual(@as(u32, 0), std.mem.readInt(u32, operand, .little));
+    }
+}
+
+test "a data value and a foreign call each become the relocation they need" {
+    const bytes = try assembleObject(testing.allocator,
+        \\global _start
+        \\extern ticks kernel32.dll GetTickCount
+        \\_start:
+        \\  foreign_call ticks
+        \\  pop
+        \\  halt
+        \\table:
+        \\  i32 _start, _start+4
+    );
+    defer testing.allocator.free(bytes);
+
+    const image = try object.parse(bytes);
+    try testing.expectEqual(@as(u8, 1), image.import_count);
+
+    var relocation_buffer: [8]object.Relocation = undefined;
+    const relocations = try collectRelocations(image, &relocation_buffer);
+    try testing.expectEqual(@as(usize, 3), relocations.len);
+
+    // The operand counts this object's own imports. The linker merges the tables
+    // of everything it reads, so the byte has to be marked for renumbering.
+    try testing.expectEqual(object.RelocationType.foreign_import8, relocations[0].relocation_type);
+    try testing.expectEqual(object.Section.code, relocations[0].section);
+    try testing.expectEqual(@as(u32, 1), relocations[0].offset);
+    try testing.expectEqual(@as(u32, 0), relocations[0].target);
+
+    try testing.expectEqual(object.Section.data, relocations[1].section);
+    try testing.expectEqual(@as(u32, 0), relocations[1].offset);
+    try testing.expectEqual(@as(i32, 0), relocations[1].addend);
+
+    // A constant joined to a name travels in the addend rather than the bytes,
+    // because the bytes have nothing to add it to yet.
+    try testing.expectEqual(object.Section.data, relocations[2].section);
+    try testing.expectEqual(@as(u32, 4), relocations[2].offset);
+    try testing.expectEqual(@as(i32, 4), relocations[2].addend);
+    try testing.expectEqual(relocations[1].target, relocations[2].target);
+}
+
+test "a global directive may come before or after the label it names" {
+    for ([_][]const u8{
+        "global main\nmain:\n  ret\n",
+        "main:\nglobal main\n  ret\n",
+    }) |source| {
+        const bytes = try assembleObject(testing.allocator, source);
+        defer testing.allocator.free(bytes);
+
+        var buffer: [4]object.Symbol = undefined;
+        const symbols = try collectSymbols(try object.parse(bytes), &buffer);
+        try testing.expectEqual(@as(usize, 1), symbols.len);
+        try testing.expectEqualStrings("main", symbols[0].name);
+        try testing.expectEqual(object.Binding.global, symbols[0].binding);
+    }
+}
+
+test "a common symbol takes the alignment it asks for, or one byte" {
+    const bytes = try assembleObject(testing.allocator,
+        \\common wide 8 8
+        \\common narrow 3
+        \\halt
+    );
+    defer testing.allocator.free(bytes);
+
+    var buffer: [4]object.Symbol = undefined;
+    const symbols = try collectSymbols(try object.parse(bytes), &buffer);
+    try testing.expectEqual(@as(u32, 8), symbols[0].alignment);
+    try testing.expectEqual(@as(u32, 3), symbols[1].size);
+    try testing.expectEqual(@as(u32, 1), symbols[1].alignment);
+
+    try testing.expectError(
+        error.InvalidAlignment,
+        assembleObject(testing.allocator, "common odd 4 3\nhalt"),
+    );
+    try testing.expectError(
+        error.InvalidCommonSize,
+        assembleObject(testing.allocator, "common empty 0 4\nhalt"),
+    );
+}
+
+test "a program and an object each refuse what only the other can have" {
+    // Nothing resolves these in a program, so assembling one would produce a
+    // container that could not do what its source said.
+    for ([_][]const u8{
+        "global main\nmain:\n  halt",
+        "extern_symbol helper\n  halt",
+        "common counter 4 4\n  halt",
+    }) |source| {
+        try testing.expectError(
+            error.LinkageDirectiveInProgram,
+            assemble(testing.allocator, source, null),
+        );
+    }
+
+    // An object has no entry point to name: the linker chooses one by name.
+    try testing.expectError(
+        error.EntryPointInObject,
+        assembleObject(testing.allocator, "entry go\ngo:\n  halt"),
+    );
+}
+
+test "an object refuses a name that means two things and a promise nothing keeps" {
+    try testing.expectError(
+        error.DuplicateSymbol,
+        assembleObject(testing.allocator, "extern_symbol helper\nhelper:\n  ret"),
+    );
+    try testing.expectError(
+        error.UnknownGlobalSymbol,
+        assembleObject(testing.allocator, "global absent\n  halt"),
+    );
+    // A name this object expects from elsewhere has nothing to offer onward.
+    try testing.expectError(
+        error.GlobalWithoutDefinition,
+        assembleObject(testing.allocator, "extern_symbol helper\nglobal helper\n  halt"),
+    );
+    try testing.expectError(
+        error.UnknownLabel,
+        assembleObject(testing.allocator, "  call absent+4\n  halt"),
+    );
+    try testing.expectError(
+        error.UnknownSymbolKind,
+        assembleObject(testing.allocator, "extern_symbol helper variable\n  halt"),
+    );
+}
+
+test "an object refuses an address that a narrow value could not hold" {
+    // In a program a truncation is visible in the source. Here nobody could see
+    // it, because the address does not exist yet.
+    try testing.expectError(
+        error.RelocationWidthMismatch,
+        assembleObject(testing.allocator, "  halt\nmessage:\n  asciiz \"hi\"\nsmall:\n  i8 message"),
+    );
+
+    const bytes = try assembleObject(testing.allocator,
+        \\  halt
+        \\message:
+        \\  asciiz "hi"
+        \\wide:
+        \\  i32 message
+    );
+    testing.allocator.free(bytes);
 }

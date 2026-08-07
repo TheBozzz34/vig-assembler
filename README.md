@@ -16,6 +16,9 @@ zig build run -- examples\load_store_call.vigas -o load_store_call.vig
 ..\vig\zig-out\bin\vig.exe load_store_call.vig
 ```
 
+Add `-c` to make a relocatable object for the linker instead of a program. See
+[Relocatable objects](#relocatable-objects).
+
 The example prints `42` and exercises the latest VIG instructions: `load`,
 `store`, `call`, and `ret`.
 
@@ -89,8 +92,8 @@ Instructions whose result depends on the sign of their operands come in pairs:
 `sub_wrap` and `mul_wrap` wrap instead. See
 [OPCODES.md](OPCODES.md#signed-and-unsigned).
 
-Six directives are available. `extern` declares a foreign import and `entry` names
-the label execution starts at. The other four describe data:
+`extern` declares a foreign import and `entry` names the label execution starts
+at. Four directives describe data:
 
 | Directive | Writes |
 | --- | --- |
@@ -102,6 +105,45 @@ A value may be a number or a label, so `i32 message` is a pointer with an initia
 value. Data is assembled into regions of its own, after the code, so it can be
 declared anywhere and is never executed. See
 [OPCODES.md](OPCODES.md#initialized-data).
+
+## Relocatable objects
+
+`-c` assembles one source into a `.vigo` object for
+[`vigld`](https://github.com/TheBozzz34/vig-linker) instead of a program:
+
+```powershell
+zig build run -- -c main.vigas -o main.vigo
+```
+
+An object is one translation unit. It has no entry point, because which function
+starts the program is a decision of the link. Nothing in it has a final address
+either: its sections will be placed among the sections of other objects, so every
+reference to a name becomes a relocation and the value in the bytes stays zero
+until the linker fills it in. Nothing is verified here for the same reason — a
+`call` to another object cannot be followed yet. The linker verifies once, after
+the last relocation, and that pass covers every byte that will run.
+
+Three directives describe how a name takes part in the link. None of them means
+anything in a complete program, so a source that uses one cannot be assembled
+without `-c`.
+
+| Directive | Means |
+| --- | --- |
+| `global name` | this object defines `name` and offers it to every other object |
+| `extern_symbol name [function\|object]` | this object uses `name` and something else defines it |
+| `common name size [alignment]` | ask the linker for space rather than defining it here |
+
+`global` may come before or after the label it names. The kind on
+`extern_symbol` is what the linker checks a reference against — a `call` must
+reach a function and a `load` must reach an object — and it defaults to
+`function`. `common` is what C's tentative definition (`int counter;` at file
+scope, with no initialiser) becomes: several objects may ask for the same name,
+and the linker makes one region as large and as strongly aligned as the largest
+request, or drops it entirely if some object defines `counter` for real.
+
+Every label is a symbol too: one in the code names a function, one in either data
+region names an object. A label the source never marks `global` stays private, so
+two objects may each have a `loop:` without collision.
 
 Assembly fails if the resulting program does not verify, for example if a jump
 lands inside another instruction, or if control can run off the end of the code
