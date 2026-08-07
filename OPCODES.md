@@ -93,6 +93,65 @@ VM share.
 | 77 | `f2u` | — | `a → int` | Truncate a binary32 value toward zero to an unsigned integer. Traps if it does not fit. |
 | 78 | `i2f` | — | `a → float` | Convert a signed integer to binary32, rounding to nearest. |
 | 79 | `u2f` | — | `a → float` | Convert an unsigned integer to binary32, rounding to nearest. |
+| 80 | `push64 value` | signed `i64` | `-> value` | VIG64 instruction. |
+| 81 | `load64 address` | unsigned `u64` | `-> value` | VIG64 instruction. |
+| 82 | `store64 address` | unsigned `u64` | `value ->` | VIG64 instruction. |
+| 83 | `load64_at` | — | `address -> value` | VIG64 instruction. |
+| 84 | `store64_at` | — | `value address ->` | VIG64 instruction. |
+| 85 | `add64` | — | `a b -> a + b` | VIG64 instruction. |
+| 86 | `sub64` | — | `a b -> a - b` | VIG64 instruction. |
+| 87 | `mul64` | — | `a b -> a * b` | VIG64 instruction. |
+| 88 | `div64` | — | `a b -> a / b` | VIG64 instruction. |
+| 89 | `mod64` | — | `a b -> a % b` | VIG64 instruction. |
+| 90 | `eq64` | — | `a b -> bool` | VIG64 instruction. |
+| 91 | `ne64` | — | `a b -> bool` | VIG64 instruction. |
+| 92 | `lt64` | — | `a b -> bool` | VIG64 instruction. |
+| 93 | `lte64` | — | `a b -> bool` | VIG64 instruction. |
+| 94 | `gt64` | — | `a b -> bool` | VIG64 instruction. |
+| 95 | `gte64` | — | `a b -> bool` | VIG64 instruction. |
+| 96 | `lt64_u` | — | `a b -> bool` | VIG64 instruction. |
+| 97 | `lte64_u` | — | `a b -> bool` | VIG64 instruction. |
+| 98 | `gt64_u` | — | `a b -> bool` | VIG64 instruction. |
+| 99 | `gte64_u` | — | `a b -> bool` | VIG64 instruction. |
+| 100 | `div64_u` | — | `a b -> a / b` | VIG64 instruction. |
+| 101 | `mod64_u` | — | `a b -> a % b` | VIG64 instruction. |
+| 102 | `and64` | — | `a b -> a & b` | VIG64 instruction. |
+| 103 | `or64` | — | `a b -> a \| b` | VIG64 instruction. |
+| 104 | `xor64` | — | `a b -> a ^ b` | VIG64 instruction. |
+| 105 | `not64` | — | `a -> a` | VIG64 instruction. |
+| 106 | `shl64` | — | `a b -> a` | VIG64 instruction. |
+| 107 | `shr64_u` | — | `a b -> a` | VIG64 instruction. |
+| 108 | `shr64_s` | — | `a b -> a` | VIG64 instruction. |
+| 109 | `rotl64` | — | `a b -> a` | VIG64 instruction. |
+| 110 | `add64_wrap` | — | `a b -> a` | VIG64 instruction. |
+| 111 | `sub64_wrap` | — | `a b -> a` | VIG64 instruction. |
+| 112 | `mul64_wrap` | — | `a b -> a` | VIG64 instruction. |
+| 113 | `dadd` | — | `a b -> a` | VIG64 binary64 instruction. |
+| 114 | `dsub` | — | `a b -> a` | VIG64 binary64 instruction. |
+| 115 | `dmul` | — | `a b -> a` | VIG64 binary64 instruction. |
+| 116 | `ddiv` | — | `a b -> a` | VIG64 binary64 instruction. |
+| 117 | `dneg` | — | `a -> a` | VIG64 binary64 instruction. |
+| 118 | `dsqrt` | — | `a -> a` | VIG64 binary64 instruction. |
+| 119 | `deq` | — | `a b -> bool` | VIG64 binary64 instruction. |
+| 120 | `dne` | — | `a b -> bool` | VIG64 binary64 instruction. |
+| 121 | `dlt` | — | `a b -> bool` | VIG64 binary64 instruction. |
+| 122 | `dle` | — | `a b -> bool` | VIG64 binary64 instruction. |
+| 123 | `dgt` | — | `a b -> bool` | VIG64 binary64 instruction. |
+| 124 | `dge` | — | `a b -> bool` | VIG64 binary64 instruction. |
+| 125 | `d2i` | — | `a -> value` | VIG64 binary64 instruction. |
+| 126 | `d2u` | — | `a -> value` | VIG64 binary64 instruction. |
+| 127 | `d2l` | — | `a -> value` | VIG64 binary64 instruction. |
+| 128 | `d2ul` | — | `a -> value` | VIG64 binary64 instruction. |
+| 129 | `i2d` | — | `a -> a` | VIG64 binary64 instruction. |
+| 130 | `u2d` | — | `a -> a` | VIG64 binary64 instruction. |
+| 131 | `l2d` | — | `a -> a` | VIG64 binary64 instruction. |
+| 132 | `ul2d` | — | `a -> a` | VIG64 binary64 instruction. |
+| 133 | `f2d` | — | `a -> a` | VIG64 binary64 instruction. |
+| 134 | `d2f` | — | `a -> a` | VIG64 binary64 instruction. |
+| 135 | `jmp64 target` | unsigned `u64` | — | VIG64 instruction. |
+| 136 | `jmp_zero64 target` | unsigned `u64` | `condition ->` | VIG64 instruction. |
+| 137 | `jmp_not_zero64 target` | unsigned `u64` | `condition ->` | VIG64 instruction. |
+| 138 | `call64 target` | unsigned `u64` | — | VIG64 instruction. |
 
 Bitwise instructions operate on the raw two's-complement representation of each
 `i32`. Shift and rotation counts use only their low five bits, so all counts are

@@ -29,8 +29,11 @@ fn operandPlaceholder(kind: OperandKind) []const u8 {
     return switch (kind) {
         .none => "",
         .signed => "value",
+        .signed64 => "value",
         .data_address => "address",
+        .data_address64 => "address",
         .code_target => "target",
+        .code_target64 => "target",
         .import_index => "name",
         .local_index => "index",
         // `enter` is the one instruction with two operands.
@@ -43,7 +46,9 @@ fn operandDescription(kind: OperandKind) []const u8 {
     return switch (kind) {
         .none => "—",
         .signed => "signed `i32`",
+        .signed64 => "signed `i64`",
         .data_address, .code_target => "unsigned `u32`",
+        .data_address64, .code_target64 => "unsigned `u64`",
         .import_index => "unsigned `u8` import index",
         .local_index => "unsigned `u16` frame slot",
         .frame_shape => "two unsigned `u16`",

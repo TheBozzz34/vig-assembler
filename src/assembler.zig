@@ -20,7 +20,7 @@ const OperandKind = bytecode.OperandKind;
 /// That is also why an object is not verified here. A `call` to a function in
 /// another object cannot be followed, and the operand of one in this object is
 /// still zero. The linker verifies once, after the last relocation.
-const Output = enum { program, object };
+const Output = enum { program, object, vig64_object };
 
 /// The region of the program that a label points into.
 ///
@@ -175,6 +175,12 @@ pub fn assembleObject(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return build(allocator, source, .object, .{}, null);
 }
 
+/// Assemble a relocatable VIG64 object. The object uses format version 2 and
+/// wide symbol and relocation records. It cannot link with a VIG32 object.
+pub fn assembleVig64Object(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    return build(allocator, source, .vig64_object, .{}, null);
+}
+
 fn build(
     allocator: std.mem.Allocator,
     source: []const u8,
@@ -188,6 +194,10 @@ fn build(
     defer imports_by_name.deinit();
     var imports = std.ArrayList(foreign.Import).empty;
     defer imports.deinit(allocator);
+    // VIG64 has a separate import record. Do not translate it through the VIG32
+    // form: that form has no result type and only four argument slots.
+    var vig64_imports = std.ArrayList(foreign.Vig64Import).empty;
+    defer vig64_imports.deinit(allocator);
 
     // A label takes the address of the next item that the assembler writes. That
     // item can be an instruction or a string. Therefore the assembler holds each
@@ -203,7 +213,7 @@ fn build(
     defer exported.deinit(allocator);
     var relocations = std.ArrayList(object.Relocation).empty;
     defer relocations.deinit(allocator);
-    const symbol_table: ?*Symbols = if (output == .object) &symbols else null;
+    const symbol_table: ?*Symbols = if (output != .program) &symbols else null;
 
     var code_len: usize = 0;
     var data_len: usize = 0;
@@ -225,17 +235,25 @@ fn build(
         }
 
         if (isDirective(line, "extern")) {
-            const declaration = try parseExtern(line);
-            if (imports_by_name.contains(declaration.name)) return error.DuplicateForeignImport;
-            if (imports.items.len >= foreign.max_imports) return error.TooManyForeignImports;
-            try imports_by_name.put(declaration.name, @intCast(imports.items.len));
-            try imports.append(allocator, declaration.import);
+            if (output == .vig64_object) {
+                const declaration = try parseVig64Extern(line);
+                if (imports_by_name.contains(declaration.name)) return error.DuplicateForeignImport;
+                if (vig64_imports.items.len >= foreign.max_imports) return error.TooManyForeignImports;
+                try imports_by_name.put(declaration.name, @intCast(vig64_imports.items.len));
+                try vig64_imports.append(allocator, declaration.import);
+            } else {
+                const declaration = try parseExtern(line);
+                if (imports_by_name.contains(declaration.name)) return error.DuplicateForeignImport;
+                if (imports.items.len >= foreign.max_imports) return error.TooManyForeignImports;
+                try imports_by_name.put(declaration.name, @intCast(imports.items.len));
+                try imports.append(allocator, declaration.import);
+            }
             continue;
         }
 
         if (isDirective(line, "entry")) {
             // An object has no entry point to name. See `assembleObject`.
-            if (output == .object) return error.EntryPointInObject;
+            if (output != .program) return error.EntryPointInObject;
             if (entry_label != null) return error.DuplicateEntryPoint;
             entry_label = try parseEntry(line);
             continue;
@@ -348,7 +366,7 @@ fn build(
         }
 
         if (dataWidth(line)) |width| {
-            try appendValues(allocator, &data, &relocations, line, width, scope);
+            try appendValues(allocator, &data, &relocations, line, width, scope, output == .vig64_object);
             continue;
         }
 
@@ -374,7 +392,7 @@ fn build(
             });
         }
 
-        var buffer: [8]u8 = undefined;
+        var buffer: [9]u8 = undefined;
         const size = try encode.encode(&buffer, instruction, operand);
         try code.appendSlice(allocator, buffer[0..size]);
     }
@@ -386,6 +404,14 @@ fn build(
             .code = code.items,
             .data = data.items,
             .bss_len = std.math.cast(u32, bss_len) orelse return error.AddressOutOfRange,
+        });
+    }
+    if (output == .vig64_object) {
+        return finishVig64Object(allocator, &symbols, vig64_imports.items, .{
+            .relocations = relocations.items,
+            .code = code.items,
+            .data = data.items,
+            .bss_len = std.math.cast(u64, bss_len) orelse return error.AddressOutOfRange,
         });
     }
 
@@ -530,6 +556,9 @@ fn parseOperand(
         .signed => .{ .signed = std.math.cast(i32, value) orelse return error.AddressOutOfRange },
         .code_target => .{ .code_target = std.math.cast(u32, value) orelse return error.AddressOutOfRange },
         .data_address => .{ .data_address = std.math.cast(u32, value) orelse return error.AddressOutOfRange },
+        .signed64 => .{ .signed64 = value },
+        .code_target64 => .{ .code_target64 = std.math.cast(u64, value) orelse return error.AddressOutOfRange },
+        .data_address64 => .{ .data_address64 = std.math.cast(u64, value) orelse return error.AddressOutOfRange },
     };
 }
 
@@ -543,8 +572,8 @@ fn parseOperand(
 /// relocation that carries no such claim.
 fn relocationTypeFor(kind: OperandKind) object.RelocationType {
     return switch (kind) {
-        .code_target => .code_target32,
-        .data_address => .data_address32,
+        .code_target, .code_target64 => .code_target32,
+        .data_address, .data_address64 => .data_address32,
         else => .guest_address32,
     };
 }
@@ -587,6 +616,20 @@ const AddressText = struct {
     offset: i64,
 };
 
+/// One 64-bit literal, written either as a signed value or as the unsigned
+/// spelling of the same eight bytes.
+///
+/// `push64 -1` and `push64 18446744073709551615` name the same bytes, and which
+/// spelling a source carries is a matter of how the value was produced: a C
+/// compiler prints `ULONG_MAX` as the unsigned form. Refusing that form would
+/// leave half the range of an `unsigned long` unwritable.
+fn parseWord(text: []const u8) !i64 {
+    return std.fmt.parseInt(i64, text, 0) catch |err| switch (err) {
+        error.Overflow => @bitCast(try std.fmt.parseInt(u64, text, 0)),
+        else => err,
+    };
+}
+
 fn splitAddress(text: []const u8, scope: Scope, accepts_label: bool) !AddressText {
     // The whole text is tried as a name first. Therefore a label whose name holds a
     // `-` still resolves, and only a name that nothing declares becomes an expression.
@@ -595,13 +638,13 @@ fn splitAddress(text: []const u8, scope: Scope, accepts_label: bool) !AddressTex
     const split = std.mem.indexOfAny(u8, text, "+-");
     // A sign at the start belongs to the number and does not make an expression.
     if (split == null or split.? == 0) {
-        return .{ .name = null, .offset = try std.fmt.parseInt(i64, text, 0) };
+        return .{ .name = null, .offset = try parseWord(text) };
     }
     if (!accepts_label) return error.InvalidCharacter;
 
     const offset_text = text[split.? + 1 ..];
     if (offset_text.len == 0) return error.MissingOperand;
-    const magnitude = try std.fmt.parseInt(i64, offset_text, 0);
+    const magnitude = try parseWord(offset_text);
 
     return .{
         .name = text[0..split.?],
@@ -616,6 +659,13 @@ const ObjectContents = struct {
     code: []const u8,
     data: []const u8,
     bss_len: u32,
+};
+
+const Vig64ObjectContents = struct {
+    relocations: []const object.Relocation,
+    code: []const u8,
+    data: []const u8,
+    bss_len: u64,
 };
 
 /// Turn the measured symbols into the form the object format holds, and write it.
@@ -653,6 +703,60 @@ fn finishObject(
     const output = try allocator.alloc(u8, try object.encodedSize(layout));
     errdefer allocator.free(output);
     std.debug.assert(try object.write(layout, output) == output.len);
+    return output;
+}
+
+/// Convert the measured source representation into a VIG64 object. Source
+/// offsets were already checked while the assembler wrote its byte slices; the
+/// V2 object records preserve them as u64 rather than narrowing them to u32.
+fn finishVig64Object(
+    allocator: std.mem.Allocator,
+    symbols: *const Symbols,
+    imports: []const foreign.Vig64Import,
+    contents: Vig64ObjectContents,
+) ![]u8 {
+    const final_symbols = try allocator.alloc(object.Vig64Symbol, symbols.entries.items.len);
+    defer allocator.free(final_symbols);
+    for (symbols.entries.items, final_symbols) |entry, *symbol| {
+        symbol.* = .{
+            .name = entry.name,
+            .binding = entry.binding,
+            .kind = entry.kind,
+            .section = entry.section,
+            .offset = entry.offset,
+            .size = entry.size,
+            .alignment = entry.alignment,
+        };
+    }
+
+    const final_relocations = try allocator.alloc(object.Vig64Relocation, contents.relocations.len);
+    defer allocator.free(final_relocations);
+    for (contents.relocations, final_relocations) |relocation, *wide| {
+        wide.* = .{
+            .relocation_type = switch (relocation.relocation_type) {
+                .foreign_import8 => .foreign_import8,
+                .code_target32 => .code_target64,
+                .data_address32 => .data_address64,
+                .guest_address32 => .guest_address64,
+            },
+            .section = relocation.section,
+            .offset = relocation.offset,
+            .target = relocation.target,
+            .addend = relocation.addend,
+        };
+    }
+
+    const layout: object.Vig64Layout = .{
+        .imports = imports,
+        .symbols = final_symbols,
+        .relocations = final_relocations,
+        .code = contents.code,
+        .data = contents.data,
+        .bss_len = contents.bss_len,
+    };
+    const output = try allocator.alloc(u8, try object.encodedVig64Size(layout));
+    errdefer allocator.free(output);
+    std.debug.assert(try object.writeVig64(layout, output) == output.len);
     return output;
 }
 
@@ -848,6 +952,7 @@ const data_widths = [_]struct { directive: []const u8, width: usize }{
     .{ .directive = "i8", .width = 1 },
     .{ .directive = "i16", .width = 2 },
     .{ .directive = "i32", .width = 4 },
+    .{ .directive = "i64", .width = 8 },
 };
 
 /// The width of one value for the data directive on this line, or null if the line
@@ -889,6 +994,7 @@ fn appendValues(
     line: []const u8,
     width: usize,
     scope: Scope,
+    vig64: bool,
 ) !void {
     var tokens = std.mem.tokenizeAny(u8, line, " \t,");
     _ = tokens.next(); // the directive
@@ -896,11 +1002,11 @@ fn appendValues(
     while (tokens.next()) |text| {
         const reference = try resolveReference(text, scope, true);
         if (reference.symbol) |target| {
-            // An address is four bytes and there is no narrower relocation,
-            // because a narrower one could not hold the answer. `i8 label` in a
-            // program is a truncation the author can see; in an object nobody
-            // could see it, so it is refused instead.
-            if (width != 4) return error.RelocationWidthMismatch;
+            // An address has the ABI slot width. There is no narrower relocation,
+            // because it could not hold the final answer. `i8 label` in a program
+            // is a truncation the author can see; in an object nobody could see
+            // it, so it is refused instead.
+            if (width != if (vig64) @as(usize, 8) else 4) return error.RelocationWidthMismatch;
             try relocations.append(allocator, .{
                 .relocation_type = .guest_address32,
                 .section = .data,
@@ -911,7 +1017,7 @@ fn appendValues(
             });
         }
 
-        var buffer: [4]u8 = undefined;
+        var buffer: [8]u8 = undefined;
         try writeValue(&buffer, reference.value, width);
         try data.appendSlice(allocator, buffer[0..width]);
     }
@@ -924,13 +1030,39 @@ fn appendValues(
 /// `i8 -1` and `i8 255` both give the byte `0xff`. The two spellings mean the same
 /// byte, and which one appears is a matter of what the source said. A value outside
 /// both is a mistake and not something to truncate without a word.
-fn writeValue(buffer: *[4]u8, value: i64, width: usize) !void {
+fn writeValue(buffer: *[8]u8, value: i64, width: usize) !void {
+    if (width == 8) {
+        std.mem.writeInt(i64, buffer, value, .little);
+        return;
+    }
     const bits: u6 = @intCast(width * 8);
     const lowest = -(@as(i64, 1) << (bits - 1));
     const highest = (@as(i64, 1) << bits) - 1;
     if (value < lowest or value > highest) return error.ValueOutOfRange;
 
-    std.mem.writeInt(u32, buffer, @truncate(@as(u64, @bitCast(value))), .little);
+    std.mem.writeInt(u32, buffer[0..4], @truncate(@as(u64, @bitCast(value))), .little);
+}
+
+/// VIG64 writes the result type before the argument types. For example:
+/// `extern CreateFileA kernel32.dll CreateFileA host_ptr guest_ptr u32 ...`
+/// This avoids guessing whether the first type is a return or an argument and
+/// makes a void function explicit.
+fn parseVig64Extern(line: []const u8) !struct { name: []const u8, import: foreign.Vig64Import } {
+    var tokens = std.mem.tokenizeAny(u8, line, " \t,");
+    _ = tokens.next(); // extern
+    const name = tokens.next() orelse return error.MissingOperand;
+    const library = tokens.next() orelse return error.MissingOperand;
+    const symbol = tokens.next() orelse return error.MissingOperand;
+    const result_name = tokens.next() orelse return error.MissingOperand;
+    var import: foreign.Vig64Import = .{
+        .library = library,
+        .symbol = symbol,
+        .result = foreign.Vig64ResultType.fromName(result_name) orelse return error.UnknownForeignType,
+    };
+    while (tokens.next()) |type_name| {
+        try import.addArg(foreign.Vig64Type.fromName(type_name) orelse return error.UnknownForeignType);
+    }
+    return .{ .name = name, .import = import };
 }
 
 /// `reserve N` gives the label before it `N` zero bytes in the static-data region.
@@ -1021,6 +1153,47 @@ test "assembles labels and the newest VIG opcodes" {
     };
 
     try expectRegions(source, &expected, "");
+}
+
+test "assembles a VIG64 object with a wide address relocation" {
+    const source =
+        \\global main
+        \\main:
+        \\  push64 data
+        \\  halt
+        \\data:
+        \\  reserve 8
+    ;
+    const output = try assembleVig64Object(testing.allocator, source);
+    defer testing.allocator.free(output);
+    const image = try object.parseVig64(output);
+    try testing.expectEqual(@as(u64, 2), image.symbol_count);
+    try testing.expectEqual(@as(u64, 1), image.relocation_count);
+    try testing.expectEqual(@as(u64, 8), image.bss_len);
+    var relocation = image.relocationIterator();
+    const decoded = (try relocation.next()).?;
+    try testing.expectEqual(object.Vig64RelocationType.guest_address64, decoded.relocation_type);
+    try testing.expectEqual(@as(u64, 1), decoded.offset);
+    try testing.expectEqual(@as(u64, 8), decoded.width());
+}
+
+test "VIG64 foreign import keeps a typed CreateFile signature" {
+    const source =
+        \\extern CreateFileA kernel32.dll CreateFileA host_ptr guest_ptr u32 u32 host_ptr u32 u32 host_ptr
+        \\foreign_call CreateFileA
+        \\halt
+    ;
+    const output = try assembleVig64Object(testing.allocator, source);
+    defer testing.allocator.free(output);
+    const image = try object.parseVig64(output);
+    var imports = image.importIterator();
+    const import = (try imports.next()).?;
+    try testing.expectEqual(foreign.Vig64ResultType.host_ptr, import.result);
+    try testing.expectEqualSlices(
+        foreign.Vig64Type,
+        &.{ .guest_ptr, .u32, .u32, .host_ptr, .u32, .u32, .host_ptr },
+        import.argTypes(),
+    );
 }
 
 test "assembles the newest operand-free opcodes" {
@@ -1467,6 +1640,11 @@ test "one data directive lists several values" {
         &[_]u8{0},
         "\x01\x00\x00\x00\x02\x00\x00\x00\x03\x00\x00\x00\x04\x05\x06",
     );
+}
+
+test "an i64 data directive writes all eight little-endian bytes" {
+    try expectRegions("halt\nx:\n  i64 0x0102030405060708", &[_]u8{0}, "\x08\x07\x06\x05\x04\x03\x02\x01");
+    try expectRegions("halt\nx:\n  i64 -1", &[_]u8{0}, "\xff\xff\xff\xff\xff\xff\xff\xff");
 }
 
 test "a data value can be a label or a label expression" {

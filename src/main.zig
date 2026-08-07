@@ -13,11 +13,19 @@ pub fn main(init: std.process.Init) !void {
     }
 
     // `-c` makes a relocatable object for the linker instead of a program.
+    // `--vig64` selects the version-2 wide object format. It is deliberately
+    // explicit while the VIG32 command-line form remains available.
     var relocatable = false;
+    var vig64 = false;
     var first: usize = 1;
-    if (args.len > 1 and std.mem.eql(u8, args[1], "-c")) {
-        relocatable = true;
-        first = 2;
+    while (first < args.len) {
+        if (std.mem.eql(u8, args[first], "-c")) {
+            relocatable = true;
+            first += 1;
+        } else if (std.mem.eql(u8, args[first], "--vig64")) {
+            vig64 = true;
+            first += 1;
+        } else break;
     }
 
     if (args.len != first + 3 or !std.mem.eql(u8, args[first + 1], "-o")) {
@@ -26,7 +34,7 @@ pub fn main(init: std.process.Init) !void {
     }
     // Nothing in an object is verified, so there is no stack to check yet. The
     // linker runs both checks on the program it produces.
-    if (relocatable and options.check_stack) {
+    if ((relocatable and options.check_stack) or (vig64 and !relocatable)) {
         usage();
         return error.InvalidArguments;
     }
@@ -37,7 +45,7 @@ pub fn main(init: std.process.Init) !void {
 
     var diagnostics: assembler.Diagnostics = .{};
     const program = (if (relocatable)
-        assembler.assembleObject(init.gpa, source)
+        if (vig64) assembler.assembleVig64Object(init.gpa, source) else assembler.assembleObject(init.gpa, source)
     else
         assembler.assembleWithOptions(init.gpa, source, options, &diagnostics)) catch |err| {
         if (diagnostics.verification) |failure| {
@@ -62,7 +70,7 @@ pub fn main(init: std.process.Init) !void {
 fn usage() void {
     std.debug.print(
         \\Usage: vigasm <source.vigas> -o <output.vig> [--check-stack]
-        \\       vigasm -c <source.vigas> -o <output.vigo>
+        \\       vigasm -c [--vig64] <source.vigas> -o <output.vigo>
         \\
     , .{});
 }
