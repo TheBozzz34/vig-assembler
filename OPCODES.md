@@ -152,6 +152,8 @@ VM share.
 | 136 | `jmp_zero64 target` | unsigned `u64` | `condition ->` | VIG64 instruction. |
 | 137 | `jmp_not_zero64 target` | unsigned `u64` | `condition ->` | VIG64 instruction. |
 | 138 | `call64 target` | unsigned `u64` | — | VIG64 instruction. |
+| 139 | `load_local32 index` | unsigned `u16` frame slot | `-> value` | VIG64 instruction. The four low bytes of a slot, sign extended: what a C `int` local occupies. |
+| 140 | `store_local32 index` | unsigned `u16` frame slot | `value ->` | VIG64 instruction. Writes the four low bytes of a slot and leaves the rest. |
 
 Bitwise instructions operate on the raw two's-complement representation of each
 `i32`. Shift and rotation counts use only their low five bits, so all counts are
