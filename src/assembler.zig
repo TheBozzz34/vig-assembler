@@ -382,6 +382,17 @@ fn build(
         // Every relocatable operand is the byte after the opcode, so the place to
         // patch is known before the instruction is written.
         if (pending) |relocation| {
+            // A VIG64 address relocation writes eight bytes, so a label in a
+            // four-byte operand would be patched over the instruction that follows
+            // it. `push64`, `jmp64`, `call64`, `load64` and `store64` are the forms
+            // that hold an address in a VIG64 object; refusing the narrow ones here
+            // turns a silent overwrite into a message. See VIG64.md.
+            if (output == .vig64_object and
+                relocation.relocation_type != .foreign_import8 and
+                instruction.operandKind().size() != 8)
+            {
+                return error.RelocationWidthMismatch;
+            }
             try relocations.append(allocator, .{
                 .relocation_type = relocation.relocation_type,
                 .section = .code,
@@ -1175,6 +1186,32 @@ test "assembles a VIG64 object with a wide address relocation" {
     try testing.expectEqual(object.Vig64RelocationType.guest_address64, decoded.relocation_type);
     try testing.expectEqual(@as(u64, 1), decoded.offset);
     try testing.expectEqual(@as(u64, 8), decoded.width());
+}
+
+test "a VIG64 object refuses a label in a four-byte operand" {
+    // The relocation for an address writes eight bytes. In a `push` it would run
+    // over the instruction after it, and nothing in the object would show that it
+    // had. `push64` is the form that holds an address.
+    try testing.expectError(error.RelocationWidthMismatch, assembleVig64Object(testing.allocator,
+        \\global main
+        \\main:
+        \\  push data
+        \\  halt
+        \\data:
+        \\  reserve 8
+    ));
+    try testing.expectError(error.RelocationWidthMismatch, assembleVig64Object(testing.allocator,
+        \\global main
+        \\main:
+        \\  jmp main
+    ));
+    // The wide forms are the ones that work.
+    const ok = try assembleVig64Object(testing.allocator,
+        \\global main
+        \\main:
+        \\  jmp64 main
+    );
+    testing.allocator.free(ok);
 }
 
 test "VIG64 foreign import keeps a typed CreateFile signature" {
