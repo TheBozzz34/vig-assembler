@@ -11,6 +11,24 @@ convention, structs, variadics and what is deliberately out of scope.
 
 ## Usage
 
+Build and test with Bazel:
+
+```powershell
+bazelisk build //:vigasm
+bazelisk test //...
+```
+
+The executable is `bazel-bin\vigasm.exe`. For example:
+
+```powershell
+bazel-bin\vigasm.exe examples\load_store_call.vigas -o load_store_call.vig
+```
+
+The Bazel tests include the `OPCODES.md` consistency check as well as the
+assembler unit tests.
+
+The legacy Zig build remains available during the transition:
+
 ```powershell
 zig build run -- examples\load_store_call.vigas -o load_store_call.vig
 ..\vig\zig-out\bin\vig.exe load_store_call.vig

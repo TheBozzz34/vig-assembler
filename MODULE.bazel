@@ -1,0 +1,17 @@
+module(
+    name = "vig_assembler",
+    version = "0.1.0",
+)
+
+bazel_dep(name = "rules_zig", version = "0.16.0")
+bazel_dep(name = "vig_bytecode", version = "0.1.0")
+local_path_override(
+    module_name = "vig_bytecode",
+    path = "../vig-bytecode",
+)
+
+zig = use_extension("@rules_zig//zig:extensions.bzl", "zig")
+zig.index(file = "@vig_bytecode//:zig-index.json")
+zig.toolchain(
+    zig_version = "0.17.0-dev.1543+6db520a4c",
+)

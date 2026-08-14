@@ -1,0 +1,64 @@
+load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_library", "zig_test")
+load("@vig_bytecode//bazel:zig_file_module.bzl", "zig_file_module")
+
+package(default_visibility = ["//visibility:public"])
+
+ZIG_SRCS = glob(["src/*.zig"])
+
+filegroup(
+    name = "examples",
+    srcs = glob(["examples/**"]),
+)
+
+zig_library(
+    name = "vig_assembler",
+    srcs = ZIG_SRCS,
+    deps = ["@vig_bytecode//:vig_bytecode"],
+    import_name = "vig_assembler",
+    main = "src/assembler.zig",
+)
+
+zig_binary(
+    name = "vigasm",
+    srcs = ZIG_SRCS,
+    deps = ["@vig_bytecode//:vig_bytecode"],
+    main = "src/main.zig",
+)
+
+zig_file_module(
+    name = "opcodes_md",
+    src = "OPCODES.md",
+)
+
+zig_test(
+    name = "assembler_test",
+    srcs = ZIG_SRCS,
+    deps = ["@vig_bytecode//:vig_bytecode"],
+    main = "src/assembler.zig",
+)
+
+zig_test(
+    name = "main_test",
+    srcs = ZIG_SRCS,
+    deps = ["@vig_bytecode//:vig_bytecode"],
+    main = "src/main.zig",
+)
+
+zig_test(
+    name = "opcodes_doc_test",
+    srcs = ZIG_SRCS,
+    deps = [
+        ":opcodes_md",
+        "@vig_bytecode//:vig_bytecode",
+    ],
+    main = "src/opcodes_doc_tests.zig",
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":assembler_test",
+        ":main_test",
+        ":opcodes_doc_test",
+    ],
+)
